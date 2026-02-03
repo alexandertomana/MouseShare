@@ -17,6 +17,7 @@ enum InputEventType: UInt8, Codable {
     case screenEnter = 10
     case screenLeave = 11
     case heartbeat = 12
+    case screenEnterAck = 13  // Acknowledgment that screen enter was received
 }
 
 /// Mouse button identifiers
@@ -209,6 +210,14 @@ struct InputEvent: Codable {
         InputEvent(
             type: .heartbeat,
             timestamp: currentTimestamp()
+        )
+    }
+    
+    static func screenEnterAck(edge: ScreenEdge) -> InputEvent {
+        InputEvent(
+            type: .screenEnterAck,
+            timestamp: currentTimestamp(),
+            screenEdge: edge
         )
     }
     

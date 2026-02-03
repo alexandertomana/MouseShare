@@ -55,6 +55,13 @@ final class MouseShareController: ObservableObject {
     private var heartbeatTimer: Timer?
     private let heartbeatInterval: TimeInterval = 1.0
     
+    // SAFETY: Failsafe timeout for screen transitions
+    // If remote doesn't acknowledge within this time, return to local control
+    private var transitionFailsafeTimer: Timer?
+    private let transitionFailsafeTimeout: TimeInterval = 2.0
+    private var pendingTransitionPeer: Peer?
+    private var pendingTransitionEdge: ScreenEdge?
+    
     // MARK: - Initialization
     
     init() {
@@ -284,9 +291,20 @@ final class MouseShareController: ObservableObject {
     // MARK: - Private Methods - Control State
     
     private func transitionToControlling(peer: Peer, edge: ScreenEdge, position: CGFloat) {
+        // SAFETY: Verify connection is alive before transitioning
+        guard connectionQueue_isConnectionAlive(for: peer.id) else {
+            print("MouseShareController: Cannot transition - connection to \(peer.name) is not alive")
+            statusMessage = "Connection lost to \(peer.name)"
+            return
+        }
+        
         controlState = .controlling
         activePeer = peer
         peer.state = .controlling
+        
+        // Store pending transition info for failsafe
+        pendingTransitionPeer = peer
+        pendingTransitionEdge = edge
         
         // Tell the capture service to forward events instead of local processing
         eventCaptureService?.setControlling(false)
@@ -301,8 +319,64 @@ final class MouseShareController: ObservableObject {
         // Start event batching
         startEventBatching(for: peer.id)
         
+        // SAFETY: Start failsafe timer - if remote doesn't respond, return to local
+        startTransitionFailsafe()
+        
         statusMessage = "Controlling \(peer.name)"
         print("MouseShareController: Now controlling \(peer.name)")
+        print("MouseShareController: Press Escape to return to local control")
+    }
+    
+    /// Check if a connection to a peer is alive (has an active connection)
+    private func connectionQueue_isConnectionAlive(for peerId: UUID) -> Bool {
+        // Check if we have an active connection to this peer
+        return connectedPeers.contains { $0.id == peerId && $0.state == .connected }
+    }
+    
+    // MARK: - Transition Failsafe
+    
+    private func startTransitionFailsafe() {
+        cancelTransitionFailsafe()
+        
+        transitionFailsafeTimer = Timer.scheduledTimer(withTimeInterval: transitionFailsafeTimeout, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                self?.handleTransitionFailsafe()
+            }
+        }
+    }
+    
+    private func cancelTransitionFailsafe() {
+        transitionFailsafeTimer?.invalidate()
+        transitionFailsafeTimer = nil
+        pendingTransitionPeer = nil
+        pendingTransitionEdge = nil
+    }
+    
+    private func handleTransitionFailsafe() {
+        guard controlState == .controlling else {
+            cancelTransitionFailsafe()
+            return
+        }
+        
+        // Check if we've received any acknowledgment (heartbeat or events)
+        // If not, return to local control
+        if let peer = pendingTransitionPeer {
+            let timeSinceLastSeen = Date().timeIntervalSince(peer.lastSeen)
+            
+            // If we haven't heard from the peer recently, assume connection is dead
+            if timeSinceLastSeen > transitionFailsafeTimeout {
+                print("MouseShareController: FAILSAFE - No response from \(peer.name), returning to local control")
+                statusMessage = "Lost connection to \(peer.name)"
+                returnToLocalControl()
+            } else {
+                // Connection seems alive, clear the failsafe
+                cancelTransitionFailsafe()
+            }
+        } else {
+            // No pending peer info, something is wrong - return to local
+            print("MouseShareController: FAILSAFE - Invalid state, returning to local control")
+            returnToLocalControl()
+        }
     }
     
     private func transitionToControlled(by peer: Peer) {
@@ -324,6 +398,9 @@ final class MouseShareController: ObservableObject {
     private func returnToLocalControl() {
         let previousPeer = activePeer
         
+        // Cancel any pending failsafe timer
+        cancelTransitionFailsafe()
+        
         controlState = .local
         activePeer = nil
         
@@ -341,6 +418,11 @@ final class MouseShareController: ObservableObject {
         
         if let peer = previousPeer {
             peer.state = .connected
+            // Notify the peer we're leaving (if still connected)
+            if let edge = pendingTransitionEdge {
+                let leaveEvent = InputEvent.screenLeave(edge: edge.opposite)
+                inputNetworkService?.send(leaveEvent, to: peer.id)
+            }
         }
         
         statusMessage = "Running"
@@ -409,6 +491,19 @@ final class MouseShareController: ObservableObject {
         for peer in connectedPeers {
             inputNetworkService?.send(heartbeat, to: peer.id)
         }
+        
+        // SAFETY: Check connection health when controlling
+        // If we haven't heard from the active peer in too long, return to local
+        if controlState == .controlling, let peer = activePeer {
+            let timeSinceLastSeen = Date().timeIntervalSince(peer.lastSeen)
+            let maxSilenceInterval: TimeInterval = 5.0  // 5 seconds without response
+            
+            if timeSinceLastSeen > maxSilenceInterval {
+                print("MouseShareController: SAFETY - No response from \(peer.name) for \(timeSinceLastSeen)s, returning to local control")
+                statusMessage = "Lost connection to \(peer.name)"
+                returnToLocalControl()
+            }
+        }
     }
 }
 
@@ -443,6 +538,17 @@ extension MouseShareController: EventCaptureDelegate {
             
             // Transition to controlling
             transitionToControlling(peer: peer, edge: edge, position: relativePosition)
+        }
+    }
+    
+    nonisolated func eventCaptureDidRequestEscapeToLocal(_ service: EventCaptureService) {
+        Task { @MainActor in
+            // User pressed Escape while controlling remote - return to local control
+            if controlState == .controlling {
+                print("MouseShareController: Escape pressed - returning to local control")
+                statusMessage = "Escaped to local control"
+                returnToLocalControl()
+            }
         }
     }
 }
@@ -516,6 +622,12 @@ extension MouseShareController: InputNetworkDelegate {
                 if let peer = connectedPeers.first(where: { $0.id == peerId }) {
                     transitionToControlled(by: peer)
                     
+                    // Send acknowledgment back to the controlling peer
+                    if let edge = event.screenEdge {
+                        let ackEvent = InputEvent.screenEnterAck(edge: edge)
+                        inputNetworkService?.send(ackEvent, to: peerId)
+                    }
+                    
                     // Move cursor to entry point
                     if let edge = event.screenEdge,
                        let entryX = event.entryX,
@@ -525,6 +637,19 @@ extension MouseShareController: InputNetworkDelegate {
                             relativePosition: CGFloat(edge == .left || edge == .right ? entryY : entryX)
                         ) ?? CGPoint(x: 100, y: 100)
                         eventInjectionService?.moveMouse(to: entryPoint)
+                    }
+                }
+                
+            case .screenEnterAck:
+                // Remote peer acknowledged our screen enter - connection is confirmed
+                // Cancel the failsafe timer
+                if controlState == .controlling && activePeer?.id == peerId {
+                    print("MouseShareController: Received screenEnterAck - connection confirmed")
+                    cancelTransitionFailsafe()
+                    
+                    // Update peer last seen
+                    if let peer = connectedPeers.first(where: { $0.id == peerId }) {
+                        peer.lastSeen = Date()
                     }
                 }
                 
@@ -579,6 +704,22 @@ extension MouseShareController: InputNetworkDelegate {
         Task { @MainActor in
             print("MouseShareController: Connection error: \(connectionError)")
             
+            // If we're controlling a remote and the connection failed, return to local immediately
+            if controlState == .controlling {
+                if peerId == nil || activePeer?.id == peerId {
+                    print("MouseShareController: Connection error while controlling - returning to local control")
+                    statusMessage = "Connection error - returned to local"
+                    returnToLocalControl()
+                }
+            } else if controlState == .controlled {
+                // If we're being controlled and connection failed, we're now in local control
+                if peerId == nil || activePeer?.id == peerId {
+                    print("MouseShareController: Connection error while being controlled - returning to local control")
+                    returnToLocalControl()
+                }
+            }
+            
+            // Also handle case where activePeer matches
             if let peerId = peerId, activePeer?.id == peerId {
                 returnToLocalControl()
             }

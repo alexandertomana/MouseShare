@@ -7,7 +7,12 @@ import Cocoa
 protocol EventCaptureDelegate: AnyObject {
     func eventCapture(_ service: EventCaptureService, didCapture event: InputEvent)
     func eventCapture(_ service: EventCaptureService, mouseReachedEdge edge: ScreenEdge, at point: CGPoint)
+    func eventCaptureDidRequestEscapeToLocal(_ service: EventCaptureService)
 }
+
+// MARK: - Escape Key Constants
+
+private let kVKEscape: UInt16 = 53
 
 // MARK: - Event Capture Service
 
@@ -172,6 +177,22 @@ final class EventCaptureService {
     fileprivate func processEvent(_ event: CGEvent, type: CGEventType) -> CGEvent? {
         let location = event.location
         lastMousePosition = location
+        
+        // SAFETY: Check for escape key - this ALWAYS returns to local control
+        // Works even when controlling a remote machine (when isControlling is false)
+        // Escape key or Cmd+Escape will abort the remote control session
+        if type == .keyDown {
+            let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
+            
+            if keyCode == kVKEscape {
+                // When controlling remote (!isControlling means we're sending to remote),
+                // Escape key should return to local control
+                if !isControlling {
+                    delegate?.eventCaptureDidRequestEscapeToLocal(self)
+                    return nil  // Suppress the escape key
+                }
+            }
+        }
         
         // Check for screen edge
         if type == .mouseMoved || type == .leftMouseDragged || type == .rightMouseDragged {
