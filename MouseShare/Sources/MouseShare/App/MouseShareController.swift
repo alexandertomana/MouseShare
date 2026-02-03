@@ -77,6 +77,14 @@ final class MouseShareController: ObservableObject {
         self.hasAccessibilityPermission = EventCaptureService.hasAccessibilityPermission
         
         print("MouseShareController: Initialized as '\(localPeerName)' (\(localPeerId))")
+        
+        // Auto-start after initialization
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_000_000_000) // 1 second delay
+            if !self.isRunning {
+                self.start()
+            }
+        }
     }
     
     // MARK: - Public Methods

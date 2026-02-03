@@ -289,8 +289,3 @@ struct DiscoveredPeerRow: View {
     }
 }
 
-// MARK: - Preview
-
-#Preview {
-    MenuBarView(controller: MouseShareController())
-}
