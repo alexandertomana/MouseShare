@@ -352,7 +352,8 @@ final class InputNetworkService {
     /// Connect to a peer
     func connect(to peer: Peer) {
         guard let endpoint = peer.endpoint else {
-            print("InputNetworkService: No endpoint for peer \(peer.name)")
+            print("InputNetworkService: ERROR - No endpoint for peer \(peer.name)")
+            delegate?.inputNetwork(self, connectionError: NSError(domain: "MouseShare", code: -1, userInfo: [NSLocalizedDescriptionKey: "No endpoint for peer"]), for: peer.id)
             return
         }
         
@@ -362,13 +363,27 @@ final class InputNetworkService {
             return
         }
         
-        // Create TCP parameters - require WiFi interface for cross-machine connections
+        // Check if already connecting
+        let isConnecting = connectionQueue.sync { 
+            pendingConnections.values.contains { conn in
+                if case .service = conn.endpoint, case .service = endpoint {
+                    return true
+                }
+                return false
+            }
+        }
+        if isConnecting {
+            print("InputNetworkService: Already connecting to \(peer.name)")
+            return
+        }
+        
+        // Create TCP parameters - allow any interface (WiFi, Ethernet, etc.)
         let parameters = NWParameters.tcp
         parameters.prohibitedInterfaceTypes = [.cellular, .loopback]
-        parameters.requiredInterfaceType = .wifi
+        // Don't require specific interface type - allow WiFi, Ethernet, etc.
         
         // Create connection to the peer's endpoint  
-        print("InputNetworkService: Connecting to endpoint \(endpoint)")
+        print("InputNetworkService: Connecting to endpoint \(endpoint) for peer \(peer.name)")
         let connection = NWConnection(to: endpoint, using: parameters)
         
         // Store as pending until handshake completes
@@ -378,12 +393,13 @@ final class InputNetworkService {
         }
         
         connection.stateUpdateHandler = { [weak self] state in
+            print("InputNetworkService: Connection state for \(peer.name): \(state)")
             self?.handleConnectionState(state, for: connection, peerId: peer.id)
         }
         
         connection.start(queue: .main)
         
-        print("InputNetworkService: Connecting to \(peer.name)...")
+        print("InputNetworkService: Started connection to \(peer.name)...")
     }
     
     /// Disconnect from a peer

@@ -109,6 +109,9 @@ final class MouseShareController: ObservableObject {
             }
         }
         
+        // Clear any stale discovered peers
+        deduplicateDiscoveredPeers()
+        
         // Get screen info
         let mainDisplay = DisplayInfo.mainDisplay
         let screenWidth = mainDisplay?.width ?? 1920
@@ -132,6 +135,25 @@ final class MouseShareController: ObservableObject {
         print("MouseShareController: Started")
     }
     
+    /// Remove duplicate peers from the discovered list
+    private func deduplicateDiscoveredPeers() {
+        var seenNames = Set<String>()
+        var uniquePeers: [Peer] = []
+        
+        for peer in discoveredPeers {
+            if !seenNames.contains(peer.name) {
+                seenNames.insert(peer.name)
+                uniquePeers.append(peer)
+            }
+        }
+        
+        let removed = discoveredPeers.count - uniquePeers.count
+        if removed > 0 {
+            print("MouseShareController: Removed \(removed) duplicate peers")
+            discoveredPeers = uniquePeers
+        }
+    }
+    
     /// Stop all services
     func stop() {
         guard isRunning else { return }
@@ -150,9 +172,20 @@ final class MouseShareController: ObservableObject {
     
     /// Connect to a peer
     func connect(to peer: Peer) {
-        guard isRunning else { return }
+        guard isRunning else { 
+            print("MouseShareController: Cannot connect - not running")
+            return 
+        }
         
+        guard peer.endpoint != nil else {
+            print("MouseShareController: Cannot connect to \(peer.name) - no endpoint")
+            statusMessage = "No endpoint for \(peer.name)"
+            return
+        }
+        
+        print("MouseShareController: Connecting to \(peer.name)...")
         peer.state = .connecting
+        statusMessage = "Connecting to \(peer.name)..."
         inputNetworkService?.connect(to: peer)
     }
     
@@ -558,13 +591,29 @@ extension MouseShareController: EventCaptureDelegate {
 extension MouseShareController: NetworkDiscoveryDelegate {
     nonisolated func networkDiscovery(_ service: NetworkDiscoveryService, didDiscover peer: Peer) {
         Task { @MainActor in
-            if !discoveredPeers.contains(where: { $0.id == peer.id }) {
-                discoveredPeers.append(peer)
-                
-                // Auto-connect if enabled
-                if settings.autoConnectEnabled {
-                    connect(to: peer)
+            // Check for duplicates by both ID and name to prevent duplicates
+            let existsByID = discoveredPeers.contains { $0.id == peer.id }
+            let existsByName = discoveredPeers.contains { $0.name == peer.name }
+            
+            if existsByID || existsByName {
+                // Update existing peer instead of adding duplicate
+                if let existingIndex = discoveredPeers.firstIndex(where: { $0.id == peer.id || $0.name == peer.name }) {
+                    let existing = discoveredPeers[existingIndex]
+                    existing.lastSeen = peer.lastSeen
+                    existing.endpoint = peer.endpoint
+                    existing.remoteScreenWidth = peer.remoteScreenWidth
+                    existing.remoteScreenHeight = peer.remoteScreenHeight
+                    print("MouseShareController: Updated existing peer '\(peer.name)'")
                 }
+                return
+            }
+            
+            discoveredPeers.append(peer)
+            print("MouseShareController: Added new peer '\(peer.name)'")
+            
+            // Auto-connect if enabled
+            if settings.autoConnectEnabled {
+                connect(to: peer)
             }
         }
     }
@@ -582,8 +631,10 @@ extension MouseShareController: NetworkDiscoveryDelegate {
     
     nonisolated func networkDiscovery(_ service: NetworkDiscoveryService, didUpdatePeer peer: Peer) {
         Task { @MainActor in
-            if let index = discoveredPeers.firstIndex(where: { $0.id == peer.id }) {
+            // Try to find by ID first, then by name
+            if let index = discoveredPeers.firstIndex(where: { $0.id == peer.id || $0.name == peer.name }) {
                 discoveredPeers[index].lastSeen = peer.lastSeen
+                discoveredPeers[index].endpoint = peer.endpoint
             }
         }
     }

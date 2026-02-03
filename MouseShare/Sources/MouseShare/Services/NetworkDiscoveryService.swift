@@ -261,13 +261,48 @@ final class NetworkDiscoveryService {
             }
         }
         
-        // Skip if this is ourselves
+        // Skip if this is ourselves (check both ID and name)
         if let id = peerId, id == localPeerId {
             return
         }
+        if name == localPeerName {
+            return
+        }
         
-        // Create peer
-        let id = peerId ?? UUID()
+        // Use the peer ID from TXT record, or generate a deterministic ID from name
+        // This prevents duplicate entries when TXT record parsing fails
+        let id: UUID
+        if let existingId = peerId {
+            id = existingId
+        } else {
+            // Generate deterministic UUID from name to prevent duplicates
+            id = UUID(uuidString: UUID(uuid: name.utf8.withContiguousStorageIfAvailable { buffer in
+                var uuid = UUID().uuid
+                for (i, byte) in buffer.prefix(16).enumerated() {
+                    withUnsafeMutableBytes(of: &uuid) { $0[i] = byte }
+                }
+                return uuid
+            } ?? UUID().uuid).uuidString) ?? UUID()
+        }
+        
+        // Check if we already have a peer with this name (prevent duplicates from multiple interfaces)
+        var existingPeer: Peer?
+        peersQueue.sync {
+            existingPeer = discoveredPeers.values.first { $0.name == name }
+        }
+        
+        if let existing = existingPeer {
+            // Update existing peer instead of adding duplicate
+            existing.lastSeen = Date()
+            existing.endpoint = result.endpoint  // Update to latest endpoint
+            existing.remoteScreenWidth = screenWidth
+            existing.remoteScreenHeight = screenHeight
+            print("NetworkDiscoveryService: Updated existing peer '\(name)'")
+            delegate?.networkDiscovery(self, didUpdatePeer: existing)
+            return
+        }
+        
+        // Create new peer
         let peer = Peer(id: id, name: name, hostName: "\(name).\(type)\(domain)")
         peer.endpoint = result.endpoint
         peer.remoteScreenWidth = screenWidth
