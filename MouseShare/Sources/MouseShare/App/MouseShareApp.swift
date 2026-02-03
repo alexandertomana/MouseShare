@@ -9,6 +9,13 @@ struct MouseShareApp: App {
         // Menu bar app
         MenuBarExtra {
             MenuBarView(controller: controller)
+                .task {
+                    // Auto-start when the menu bar extra appears
+                    try? await Task.sleep(nanoseconds: 500_000_000) // 0.5 second delay
+                    if !controller.isRunning {
+                        controller.start()
+                    }
+                }
         } label: {
             Image(systemName: menuBarIcon)
                 .symbolRenderingMode(.hierarchical)
