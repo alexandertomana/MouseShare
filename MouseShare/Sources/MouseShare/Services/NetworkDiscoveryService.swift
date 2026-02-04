@@ -101,7 +101,8 @@ final class NetworkDiscoveryService {
     private func startAdvertising() -> Bool {
         do {
             // Create TXT record with peer info
-            let advertisement = PeerAdvertisement(
+            // Include the actual port (24801) in the TXT record since we use a different port for advertising
+            var advertisement = PeerAdvertisement(
                 id: localPeerId,
                 name: localPeerName,
                 screenWidth: localScreenWidth,
@@ -112,15 +113,20 @@ final class NetworkDiscoveryService {
             let parameters = NWParameters.tcp
             parameters.includePeerToPeer = true
             
-            // Create listener
-            let listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: Self.defaultPort)!)
+            // Use port 0 (auto-assign) for the Bonjour listener to avoid conflict
+            // with InputNetworkService's BSD listener on port 24801.
+            // The actual connection port (24801) is advertised in the TXT record.
+            let listener = try NWListener(using: parameters, on: .any)
             
-            // Set service with TXT record
+            // Set service with TXT record - include port info
+            var txtRecord = advertisement.txtRecord
+            txtRecord["port"] = String(Self.defaultPort)
+            
             listener.service = NWListener.Service(
                 name: localPeerName,
                 type: serviceType,
                 domain: serviceDomain,
-                txtRecord: advertisement.txtRecord
+                txtRecord: txtRecord
             )
             
             listener.stateUpdateHandler = { [weak self] state in
@@ -134,7 +140,7 @@ final class NetworkDiscoveryService {
             listener.start(queue: .main)
             self.listener = listener
             
-            print("NetworkDiscoveryService: Started advertising as '\(localPeerName)'")
+            print("NetworkDiscoveryService: Started advertising as '\(localPeerName)' (connections on port \(Self.defaultPort))")
             return true
             
         } catch {

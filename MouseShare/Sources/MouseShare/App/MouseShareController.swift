@@ -355,7 +355,19 @@ final class MouseShareController: ObservableObject {
         eventInjectionService?.setCursorVisible(false)
         
         // Send screen enter event to peer
-        let enterEvent = InputEvent.screenEnter(edge: edge.opposite, x: Float(position), y: Float(position))
+        // For left/right edges, position is the relative Y (0-1), X is at the edge
+        // For top/bottom edges, position is the relative X (0-1), Y is at the edge
+        let entryX: Float
+        let entryY: Float
+        switch edge {
+        case .left, .right:
+            entryX = (edge == .left) ? 0.0 : 1.0  // Entry point on opposite side
+            entryY = Float(position)
+        case .top, .bottom:
+            entryX = Float(position)
+            entryY = (edge == .top) ? 0.0 : 1.0
+        }
+        let enterEvent = InputEvent.screenEnter(edge: edge.opposite, x: entryX, y: entryY)
         inputNetworkService?.send(enterEvent, to: peer.id)
         
         // Start event batching
@@ -372,7 +384,10 @@ final class MouseShareController: ObservableObject {
     /// Check if a connection to a peer is alive (has an active connection)
     private func connectionQueue_isConnectionAlive(for peerId: UUID) -> Bool {
         // Check if we have an active connection to this peer
-        return connectedPeers.contains { $0.id == peerId && $0.state == .connected }
+        // Allow connected, controlling, or controlled states as all are "alive"
+        return connectedPeers.contains { peer in
+            peer.id == peerId && (peer.state == .connected || peer.state == .controlling || peer.state == .controlled)
+        }
     }
     
     // MARK: - Transition Failsafe

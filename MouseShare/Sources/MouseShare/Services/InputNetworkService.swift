@@ -132,7 +132,8 @@ final class InputNetworkService {
     private var listener: NWListener?
     private var bsdListener: BSDSocketListener?
     private var connections: [UUID: NWConnection] = [:]
-    private var rawConnections: [Int32: (socket: Int32, host: String)] = [:]  // BSD socket connections
+    private var bsdConnections: [UUID: DispatchIO] = [:]  // BSD socket connections by peer ID
+    private var bsdSocketToPeerId: [Int32: UUID] = [:]  // Map socket FD to peer ID
     private var pendingConnections: [ObjectIdentifier: NWConnection] = [:]
     private let connectionQueue = DispatchQueue(label: "com.mouseshare.connections", attributes: .concurrent)
     
@@ -295,7 +296,7 @@ final class InputNetworkService {
     private func processIncomingBSDMessage(_ data: Data, from host: String, channel: DispatchIO, socket: Int32) {
         // Try to parse as handshake request first
         if let handshake = try? HandshakeRequest.deserialize(from: data) {
-            print("InputNetworkService: Received handshake from \(handshake.peerName)")
+            print("InputNetworkService: Received handshake from \(handshake.peerName) via BSD socket")
             
             // Create a response and send it
             let response = HandshakeResponse(
@@ -311,15 +312,42 @@ final class InputNetworkService {
                 sendViaBSD(data: responseData, channel: channel)
             }
             
-            // Note: For full integration, we'd need to track this connection
-            // and wire it up to the rest of the system
+            // Register this BSD connection
+            let peerId = handshake.peerId
+            connectionQueue.async(flags: .barrier) { [weak self] in
+                self?.bsdConnections[peerId] = channel
+                self?.bsdSocketToPeerId[socket] = peerId
+                self?.receiveSequences[peerId] = 0
+            }
+            
+            // Create peer and notify delegate
+            let peer = Peer(id: peerId, name: handshake.peerName, hostName: host)
+            peer.remoteScreenWidth = handshake.screenWidth
+            peer.remoteScreenHeight = handshake.screenHeight
+            peer.state = .connected
+            
+            print("InputNetworkService: BSD connection registered for \(handshake.peerName)")
+            delegate?.inputNetwork(self, didConnect: peer)
         }
         // Try to parse as input packet
         else if let packet = try? InputPacket.deserialize(from: data) {
-            for event in packet.events {
-                // Find the peer ID based on host (simplified)
-                // In a real implementation, we'd track this properly
-                print("InputNetworkService: Received event from BSD socket")
+            // Find the peer ID from the socket mapping
+            let peerId = connectionQueue.sync { bsdSocketToPeerId[socket] }
+            
+            if let peerId = peerId {
+                // Check sequence
+                let expectedSeq = (receiveSequences[peerId] ?? 0) + 1
+                if packet.sequenceNumber != expectedSeq && expectedSeq > 1 {
+                    print("InputNetworkService: BSD packet out of order (expected \(expectedSeq), got \(packet.sequenceNumber))")
+                }
+                receiveSequences[peerId] = packet.sequenceNumber
+                
+                // Deliver events to delegate
+                for event in packet.events {
+                    delegate?.inputNetwork(self, didReceive: event, from: peerId)
+                }
+            } else {
+                print("InputNetworkService: Received event from unknown BSD socket \(socket)")
             }
         }
     }
@@ -408,6 +436,11 @@ final class InputNetworkService {
             if let connection = self?.connections.removeValue(forKey: peerId) {
                 connection.cancel()
             }
+            if let channel = self?.bsdConnections.removeValue(forKey: peerId) {
+                channel.close()
+            }
+            // Clean up socket-to-peer mapping
+            self?.bsdSocketToPeerId = self?.bsdSocketToPeerId.filter { $0.value != peerId } ?? [:]
             self?.receiveBuffers.removeValue(forKey: peerId)
             self?.receiveSequences.removeValue(forKey: peerId)
         }
@@ -424,6 +457,12 @@ final class InputNetworkService {
             }
             self?.connections.removeAll()
             
+            for (_, channel) in self?.bsdConnections ?? [:] {
+                channel.close()
+            }
+            self?.bsdConnections.removeAll()
+            self?.bsdSocketToPeerId.removeAll()
+            
             for (_, connection) in self?.pendingConnections ?? [:] {
                 connection.cancel()
             }
@@ -436,7 +475,12 @@ final class InputNetworkService {
     
     /// Send an input event to a peer
     func send(_ event: InputEvent, to peerId: UUID) {
-        guard let connection = connectionQueue.sync(execute: { connections[peerId] }) else {
+        // Check for NWConnection first, then BSD connection
+        let nwConnection = connectionQueue.sync { connections[peerId] }
+        let bsdChannel = connectionQueue.sync { bsdConnections[peerId] }
+        
+        guard nwConnection != nil || bsdChannel != nil else {
+            print("InputNetworkService: No connection found for peer \(peerId)")
             return
         }
         
@@ -456,12 +500,16 @@ final class InputNetworkService {
             var framedData = Data(bytes: &length, count: 4)
             framedData.append(data)
             
-            connection.send(content: framedData, completion: .contentProcessed { [weak self] error in
-                if let error = error {
-                    print("InputNetworkService: Send error: \(error)")
-                    self?.delegate?.inputNetwork(self!, connectionError: error, for: peerId)
-                }
-            })
+            if let connection = nwConnection {
+                connection.send(content: framedData, completion: .contentProcessed { [weak self] error in
+                    if let error = error {
+                        print("InputNetworkService: Send error: \(error)")
+                        self?.delegate?.inputNetwork(self!, connectionError: error, for: peerId)
+                    }
+                })
+            } else if let channel = bsdChannel {
+                sendViaBSD(data: data, channel: channel)
+            }
             
         } catch {
             print("InputNetworkService: Serialization error: \(error)")
@@ -471,7 +519,13 @@ final class InputNetworkService {
     /// Send multiple events in a batch
     func send(_ events: [InputEvent], to peerId: UUID) {
         guard !events.isEmpty else { return }
-        guard let connection = connectionQueue.sync(execute: { connections[peerId] }) else {
+        
+        // Check for NWConnection first, then BSD connection
+        let nwConnection = connectionQueue.sync { connections[peerId] }
+        let bsdChannel = connectionQueue.sync { bsdConnections[peerId] }
+        
+        guard nwConnection != nil || bsdChannel != nil else {
+            print("InputNetworkService: No connection found for peer \(peerId) (batch)")
             return
         }
         
@@ -489,12 +543,16 @@ final class InputNetworkService {
             var framedData = Data(bytes: &length, count: 4)
             framedData.append(data)
             
-            connection.send(content: framedData, completion: .contentProcessed { [weak self] error in
-                if let error = error {
-                    print("InputNetworkService: Batch send error: \(error)")
-                    self?.delegate?.inputNetwork(self!, connectionError: error, for: peerId)
-                }
-            })
+            if let connection = nwConnection {
+                connection.send(content: framedData, completion: .contentProcessed { [weak self] error in
+                    if let error = error {
+                        print("InputNetworkService: Batch send error: \(error)")
+                        self?.delegate?.inputNetwork(self!, connectionError: error, for: peerId)
+                    }
+                })
+            } else if let channel = bsdChannel {
+                sendViaBSD(data: data, channel: channel)
+            }
             
         } catch {
             print("InputNetworkService: Batch serialization error: \(error)")
