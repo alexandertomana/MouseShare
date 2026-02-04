@@ -280,21 +280,32 @@ struct ScreenArrangement: Codable, Equatable {
         // Remove existing local screens
         screens.removeAll { $0.isLocal }
         
-        // Add current displays
+        // Add current displays - normalize positions so primary display is at (0,0)
         let displays = DisplayInfo.allDisplays()
+        
+        // Find the main display's position as origin
+        let mainDisplay = displays.first { $0.isMain }
+        let originX = Int(mainDisplay?.frame.origin.x ?? 0)
+        let originY = Int(mainDisplay?.frame.origin.y ?? 0)
+        
         for display in displays {
             let screen = ArrangedScreen(
                 id: UUID(),
                 name: display.name,
                 width: display.width,
                 height: display.height,
-                x: Int(display.frame.origin.x),
-                y: Int(display.frame.origin.y),
+                x: Int(display.frame.origin.x) - originX,  // Normalize to (0,0)
+                y: Int(display.frame.origin.y) - originY,
                 isLocal: true,
                 peerId: nil
             )
             screens.append(screen)
         }
+    }
+    
+    /// Clear all arrangement data and start fresh
+    mutating func clearAll() {
+        screens.removeAll()
     }
 }
 

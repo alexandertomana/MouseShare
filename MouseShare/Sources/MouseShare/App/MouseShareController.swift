@@ -151,19 +151,18 @@ final class MouseShareController: ObservableObject {
         // Clear any stale discovered peers
         deduplicateDiscoveredPeers()
         
-        // Initialize screen arrangement with local displays
-        if settings.screenConfig.arrangement.localScreens.isEmpty {
-            settings.screenConfig.arrangement.initializeLocalDisplays()
-            settings.save()
-            debugLog("Initialized local display arrangement")
-        }
+        // ALWAYS reinitialize local displays on start to ensure accuracy
+        // Remote screens will be added when peers connect
+        debugLog("Reinitializing local displays...")
+        settings.screenConfig.arrangement.initializeLocalDisplays()
+        settings.save()
         
         // Log current arrangement for debugging
-        debugLog("=== SCREEN ARRANGEMENT ===")
+        debugLog("=== SCREEN ARRANGEMENT (after init) ===")
         for screen in settings.screenConfig.arrangement.screens {
             debugLog("  \(screen.isLocal ? "LOCAL" : "REMOTE"): \(screen.name) (\(screen.width)x\(screen.height)) at (\(screen.x), \(screen.y)) peerId=\(String(describing: screen.peerId))")
         }
-        debugLog("==========================")
+        debugLog("========================================")
         
         // Get screen info
         let mainDisplay = DisplayInfo.mainDisplay
@@ -909,12 +908,15 @@ extension MouseShareController: InputNetworkDelegate {
                     if let edge = event.screenEdge,
                        let entryX = event.entryX,
                        let entryY = event.entryY {
+                        debugLog("Screen enter params: edge=\(edge), entryX=\(entryX), entryY=\(entryY)")
+                        let relPos = CGFloat(edge == .left || edge == .right ? entryY : entryX)
                         let entryPoint = screenEdgeService?.calculateEntryPoint(
                             edge: edge,
-                            relativePosition: CGFloat(edge == .left || edge == .right ? entryY : entryX)
+                            relativePosition: relPos
                         ) ?? CGPoint(x: 100, y: 100)
-                        debugLog("Moving cursor to \(entryPoint)")
+                        debugLog("Calculated entry point: \(entryPoint) (relPos=\(relPos))")
                         eventInjectionService?.moveMouse(to: entryPoint)
+                        debugLog("Cursor positioned for remote control")
                     }
                 } else {
                     debugLog("ERROR: No peer found for \(peerId) in connectedPeers")

@@ -122,9 +122,16 @@ final class EventInjectionService {
     func setCursorVisible(_ visible: Bool) {
         debugLog("setCursorVisible(\(visible))")
         if visible {
-            CGDisplayShowCursor(CGMainDisplayID())
+            // Show cursor - call multiple times to ensure it's visible
+            // (CGDisplayShowCursor uses a counter, need to balance with hides)
+            for _ in 0..<5 {
+                CGDisplayShowCursor(CGMainDisplayID())
+            }
         } else {
-            CGDisplayHideCursor(CGMainDisplayID())
+            // Hide cursor - call multiple times to ensure it's hidden
+            for _ in 0..<5 {
+                CGDisplayHideCursor(CGMainDisplayID())
+            }
         }
     }
     
