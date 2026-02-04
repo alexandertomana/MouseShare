@@ -7,7 +7,12 @@ import Cocoa
 protocol EventCaptureDelegate: AnyObject {
     func eventCapture(_ service: EventCaptureService, didCapture event: InputEvent)
     func eventCapture(_ service: EventCaptureService, mouseReachedEdge edge: ScreenEdge, at point: CGPoint)
+    func eventCaptureDidRequestEscapeToLocal(_ service: EventCaptureService)
 }
+
+// MARK: - Escape Key Constants
+
+private let kVKEscape: UInt16 = 53
 
 // MARK: - Event Capture Service
 
@@ -173,6 +178,22 @@ final class EventCaptureService {
         let location = event.location
         lastMousePosition = location
         
+        // SAFETY: Check for escape key - this ALWAYS returns to local control
+        // Works even when controlling a remote machine (when isControlling is false)
+        // Escape key or Cmd+Escape will abort the remote control session
+        if type == .keyDown {
+            let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
+            
+            if keyCode == kVKEscape {
+                // When controlling remote (!isControlling means we're sending to remote),
+                // Escape key should return to local control
+                if !isControlling {
+                    delegate?.eventCaptureDidRequestEscapeToLocal(self)
+                    return nil  // Suppress the escape key
+                }
+            }
+        }
+        
         // Check for screen edge
         if type == .mouseMoved || type == .leftMouseDragged || type == .rightMouseDragged {
             checkScreenEdge(at: location)
@@ -227,7 +248,10 @@ final class EventCaptureService {
         
         switch type {
         case .mouseMoved:
-            return .mouseMove(x: x, y: y, modifiers: currentModifiers)
+            // Get mouse deltas for relative movement
+            let deltaX = Float(event.getDoubleValueField(.mouseEventDeltaX))
+            let deltaY = Float(event.getDoubleValueField(.mouseEventDeltaY))
+            return .mouseMove(x: x, y: y, deltaX: deltaX, deltaY: deltaY, modifiers: currentModifiers)
             
         case .leftMouseDown:
             let clickCount = UInt8(event.getIntegerValueField(.mouseEventClickState))
@@ -251,13 +275,19 @@ final class EventCaptureService {
             return .mouseUp(x: x, y: y, button: .center)
             
         case .leftMouseDragged:
-            return .mouseDrag(x: x, y: y, button: .left)
+            let deltaX = Float(event.getDoubleValueField(.mouseEventDeltaX))
+            let deltaY = Float(event.getDoubleValueField(.mouseEventDeltaY))
+            return .mouseDrag(x: x, y: y, button: .left, deltaX: deltaX, deltaY: deltaY)
             
         case .rightMouseDragged:
-            return .mouseDrag(x: x, y: y, button: .right)
+            let deltaX = Float(event.getDoubleValueField(.mouseEventDeltaX))
+            let deltaY = Float(event.getDoubleValueField(.mouseEventDeltaY))
+            return .mouseDrag(x: x, y: y, button: .right, deltaX: deltaX, deltaY: deltaY)
             
         case .otherMouseDragged:
-            return .mouseDrag(x: x, y: y, button: .center)
+            let deltaX = Float(event.getDoubleValueField(.mouseEventDeltaX))
+            let deltaY = Float(event.getDoubleValueField(.mouseEventDeltaY))
+            return .mouseDrag(x: x, y: y, button: .center, deltaX: deltaX, deltaY: deltaY)
             
         case .scrollWheel:
             let deltaX = Float(event.getDoubleValueField(.scrollWheelEventDeltaAxis2))

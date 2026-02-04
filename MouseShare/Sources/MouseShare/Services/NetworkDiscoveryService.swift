@@ -101,7 +101,8 @@ final class NetworkDiscoveryService {
     private func startAdvertising() -> Bool {
         do {
             // Create TXT record with peer info
-            let advertisement = PeerAdvertisement(
+            // Include the actual port (24801) in the TXT record since we use a different port for advertising
+            var advertisement = PeerAdvertisement(
                 id: localPeerId,
                 name: localPeerName,
                 screenWidth: localScreenWidth,
@@ -112,15 +113,20 @@ final class NetworkDiscoveryService {
             let parameters = NWParameters.tcp
             parameters.includePeerToPeer = true
             
-            // Create listener
-            let listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: Self.defaultPort)!)
+            // Use port 0 (auto-assign) for the Bonjour listener to avoid conflict
+            // with InputNetworkService's BSD listener on port 24801.
+            // The actual connection port (24801) is advertised in the TXT record.
+            let listener = try NWListener(using: parameters, on: .any)
             
-            // Set service with TXT record
+            // Set service with TXT record - include port info
+            var txtRecord = advertisement.txtRecord
+            txtRecord["port"] = String(Self.defaultPort)
+            
             listener.service = NWListener.Service(
                 name: localPeerName,
                 type: serviceType,
                 domain: serviceDomain,
-                txtRecord: advertisement.txtRecord
+                txtRecord: txtRecord
             )
             
             listener.stateUpdateHandler = { [weak self] state in
@@ -134,7 +140,7 @@ final class NetworkDiscoveryService {
             listener.start(queue: .main)
             self.listener = listener
             
-            print("NetworkDiscoveryService: Started advertising as '\(localPeerName)'")
+            print("NetworkDiscoveryService: Started advertising as '\(localPeerName)' (connections on port \(Self.defaultPort))")
             return true
             
         } catch {
@@ -261,14 +267,52 @@ final class NetworkDiscoveryService {
             }
         }
         
-        // Skip if this is ourselves
+        // Skip if this is ourselves (check both ID and name)
         if let id = peerId, id == localPeerId {
             return
         }
+        if name == localPeerName {
+            return
+        }
         
-        // Create peer
-        let id = peerId ?? UUID()
-        let peer = Peer(id: id, name: name, hostName: "\(name).\(type)\(domain)")
+        // Use the peer ID from TXT record, or generate a deterministic ID from name
+        // This prevents duplicate entries when TXT record parsing fails
+        let id: UUID
+        if let existingId = peerId {
+            id = existingId
+        } else {
+            // Generate deterministic UUID from name to prevent duplicates
+            id = UUID(uuidString: UUID(uuid: name.utf8.withContiguousStorageIfAvailable { buffer in
+                var uuid = UUID().uuid
+                for (i, byte) in buffer.prefix(16).enumerated() {
+                    withUnsafeMutableBytes(of: &uuid) { $0[i] = byte }
+                }
+                return uuid
+            } ?? UUID().uuid).uuidString) ?? UUID()
+        }
+        
+        // Check if we already have a peer with this name (prevent duplicates from multiple interfaces)
+        var existingPeer: Peer?
+        peersQueue.sync {
+            existingPeer = discoveredPeers.values.first { $0.name == name }
+        }
+        
+        if let existing = existingPeer {
+            // Update existing peer instead of adding duplicate
+            existing.lastSeen = Date()
+            existing.endpoint = result.endpoint  // Update to latest endpoint
+            existing.remoteScreenWidth = screenWidth
+            existing.remoteScreenHeight = screenHeight
+            print("NetworkDiscoveryService: Updated existing peer '\(name)'")
+            delegate?.networkDiscovery(self, didUpdatePeer: existing)
+            return
+        }
+        
+        // Create new peer
+        // Convert the Bonjour service name to a proper .local hostname
+        // e.g., "Mac Studio" -> "Mac-Studio.local"
+        let hostname = name.replacingOccurrences(of: " ", with: "-") + ".local"
+        let peer = Peer(id: id, name: name, hostName: hostname)
         peer.endpoint = result.endpoint
         peer.remoteScreenWidth = screenWidth
         peer.remoteScreenHeight = screenHeight

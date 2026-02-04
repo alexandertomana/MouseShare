@@ -17,6 +17,7 @@ enum InputEventType: UInt8, Codable {
     case screenEnter = 10
     case screenLeave = 11
     case heartbeat = 12
+    case screenEnterAck = 13  // Acknowledgment that screen enter was received
 }
 
 /// Mouse button identifiers
@@ -83,6 +84,10 @@ struct InputEvent: Codable {
     var scrollDeltaX: Float?
     var scrollDeltaY: Float?
     
+    // Mouse delta for relative movement (when controlling remote)
+    var mouseDeltaX: Float?
+    var mouseDeltaY: Float?
+    
     // Keyboard data
     var keyCode: UInt16?
     var characters: String?
@@ -99,14 +104,17 @@ struct InputEvent: Codable {
     
     // MARK: - Factory Methods
     
-    static func mouseMove(x: Float, y: Float, modifiers: ModifierFlags = []) -> InputEvent {
-        InputEvent(
+    static func mouseMove(x: Float, y: Float, deltaX: Float = 0, deltaY: Float = 0, modifiers: ModifierFlags = []) -> InputEvent {
+        var event = InputEvent(
             type: .mouseMove,
             timestamp: currentTimestamp(),
             x: x,
             y: y,
             modifiers: modifiers
         )
+        event.mouseDeltaX = deltaX
+        event.mouseDeltaY = deltaY
+        return event
     }
     
     static func mouseDown(x: Float, y: Float, button: MouseButton, clickCount: UInt8 = 1) -> InputEvent {
@@ -130,14 +138,17 @@ struct InputEvent: Codable {
         )
     }
     
-    static func mouseDrag(x: Float, y: Float, button: MouseButton) -> InputEvent {
-        InputEvent(
+    static func mouseDrag(x: Float, y: Float, button: MouseButton, deltaX: Float = 0, deltaY: Float = 0) -> InputEvent {
+        var event = InputEvent(
             type: .mouseDrag,
             timestamp: currentTimestamp(),
             x: x,
             y: y,
             button: button
         )
+        event.mouseDeltaX = deltaX
+        event.mouseDeltaY = deltaY
+        return event
     }
     
     static func scroll(deltaX: Float, deltaY: Float, x: Float, y: Float) -> InputEvent {
@@ -209,6 +220,14 @@ struct InputEvent: Codable {
         InputEvent(
             type: .heartbeat,
             timestamp: currentTimestamp()
+        )
+    }
+    
+    static func screenEnterAck(edge: ScreenEdge) -> InputEvent {
+        InputEvent(
+            type: .screenEnterAck,
+            timestamp: currentTimestamp(),
+            screenEdge: edge
         )
     }
     

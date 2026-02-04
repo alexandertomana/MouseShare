@@ -24,6 +24,24 @@ final class EventInjectionService {
         // Create event source for posting events
         eventSource = CGEventSource(stateID: .combinedSessionState)
         updateLocalScreenBounds()
+        debugLog("EventInjectionService initialized, bounds: \(localScreenBounds)")
+    }
+    
+    private func debugLog(_ message: String) {
+        let logPath = "/tmp/mouseshare_debug.log"
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let line = "[\(timestamp)] [Injection] \(message)\n"
+        if let data = line.data(using: .utf8) {
+            if FileManager.default.fileExists(atPath: logPath) {
+                if let handle = FileHandle(forWritingAtPath: logPath) {
+                    handle.seekToEndOfFile()
+                    handle.write(data)
+                    handle.closeFile()
+                }
+            } else {
+                try? data.write(to: URL(fileURLWithPath: logPath))
+            }
+        }
     }
     
     // MARK: - Public Methods
@@ -40,6 +58,7 @@ final class EventInjectionService {
     
     /// Inject an input event into the system
     func inject(_ event: InputEvent) {
+        debugLog("inject() called with event type: \(event.type)")
         switch event.type {
         case .mouseMove:
             injectMouseMove(event)
@@ -58,26 +77,43 @@ final class EventInjectionService {
         case .flagsChanged:
             injectFlagsChanged(event)
         case .screenEnter:
+            debugLog("Handling screenEnter event")
             handleScreenEnter(event)
         default:
+            debugLog("Unknown event type: \(event.type)")
             break
         }
     }
     
     /// Move mouse to a specific position (used for screen enter)
     func moveMouse(to point: CGPoint) {
+        debugLog("moveMouse() called - moving cursor to \(point)")
         currentMousePosition = point
-        CGWarpMouseCursorPosition(point)
+        
+        // Ensure mouse is associated with cursor position (might have been disassociated)
+        CGAssociateMouseAndMouseCursorPosition(1)
+        
+        // Warp the cursor
+        let result = CGWarpMouseCursorPosition(point)
+        debugLog("CGWarpMouseCursorPosition result: \(result), point: \(point)")
+        
+        // Verify the position after warp
+        let actualPos = NSEvent.mouseLocation
+        debugLog("Actual position after warp: \(actualPos)")
         
         // Optionally also post a mouse move event
         if let moveEvent = CGEvent(mouseEventSource: eventSource, mouseType: .mouseMoved,
                                    mouseCursorPosition: point, mouseButton: .left) {
             moveEvent.post(tap: .cghidEventTap)
+            debugLog("Mouse move event posted")
+        } else {
+            debugLog("Failed to create mouse move event")
         }
     }
     
     /// Show or hide the cursor
     func setCursorVisible(_ visible: Bool) {
+        debugLog("setCursorVisible(\(visible))")
         if visible {
             CGDisplayShowCursor(CGMainDisplayID())
         } else {
@@ -85,30 +121,107 @@ final class EventInjectionService {
         }
     }
     
+    /// Park cursor at center of screen (used when controlling remote to prevent drift)
+    func parkCursor() {
+        let mainDisplay = CGMainDisplayID()
+        let bounds = CGDisplayBounds(mainDisplay)
+        let center = CGPoint(x: bounds.midX, y: bounds.midY)
+        debugLog("parkCursor() at \(center)")
+        CGWarpMouseCursorPosition(center)
+        currentMousePosition = center
+    }
+    
+    /// Warp cursor to a specific screen edge (used when returning from remote control)
+    /// - Parameters:
+    ///   - edge: The edge to warp to
+    ///   - relativePosition: Position along the edge (0.0 to 1.0)
+    func warpToEdge(_ edge: ScreenEdge, relativePosition: CGFloat) {
+        let mainDisplay = CGMainDisplayID()
+        let bounds = CGDisplayBounds(mainDisplay)
+        let inset: CGFloat = 20  // Stay slightly inside the edge
+        
+        var point: CGPoint
+        switch edge {
+        case .left:
+            point = CGPoint(x: bounds.minX + inset, y: bounds.minY + relativePosition * bounds.height)
+        case .right:
+            point = CGPoint(x: bounds.maxX - inset, y: bounds.minY + relativePosition * bounds.height)
+        case .top:
+            point = CGPoint(x: bounds.minX + relativePosition * bounds.width, y: bounds.minY + inset)
+        case .bottom:
+            point = CGPoint(x: bounds.minX + relativePosition * bounds.width, y: bounds.maxY - inset)
+        }
+        
+        debugLog("warpToEdge(\(edge), \(relativePosition)) -> \(point)")
+        CGWarpMouseCursorPosition(point)
+        currentMousePosition = point
+    }
+    
+    /// Get the current cursor position (useful for calculating return position)
+    func getCurrentPosition() -> CGPoint {
+        if let locEvent = CGEvent(source: nil) {
+            return locEvent.location
+        }
+        return currentMousePosition
+    }
+    
     // MARK: - Private Methods - Mouse Events
     
     private func injectMouseMove(_ event: InputEvent) {
-        guard let x = event.x, let y = event.y else { return }
+        // ONLY use deltas for mouse movement - NEVER fall back to absolute coordinates
+        // Absolute coordinates come from the remote machine and are meaningless here
+        guard let deltaX = event.mouseDeltaX, let deltaY = event.mouseDeltaY else {
+            // No deltas provided - this shouldn't happen for mouseMove events
+            debugLog("injectMouseMove: no deltas provided, ignoring")
+            return
+        }
         
-        let point = transformCoordinates(x: x, y: y)
+        // If no movement, don't do anything - prevents jumping from absolute coords
+        if deltaX == 0 && deltaY == 0 {
+            return
+        }
+        
+        // Get the ACTUAL current cursor position using CGEvent (CG coordinates, top-left origin)
+        let actualPosition: CGPoint
+        if let locEvent = CGEvent(source: nil) {
+            actualPosition = locEvent.location
+        } else {
+            actualPosition = currentMousePosition
+        }
+        
+        // Apply delta to actual position
+        let newX = actualPosition.x + CGFloat(deltaX)
+        let newY = actualPosition.y + CGFloat(deltaY)
+        
+        // Clamp to screen bounds (use main display bounds for CG coordinates)
+        let mainDisplay = CGMainDisplayID()
+        let bounds = CGDisplayBounds(mainDisplay)
+        let clampedX = max(bounds.minX, min(bounds.maxX - 1, newX))
+        let clampedY = max(bounds.minY, min(bounds.maxY - 1, newY))
+        
+        let point = CGPoint(x: clampedX, y: clampedY)
         currentMousePosition = point
         
-        guard let cgEvent = CGEvent(
+        // Warp cursor to new position
+        CGWarpMouseCursorPosition(point)
+        
+        // Also post mouse move event for apps that need it
+        if let cgEvent = CGEvent(
             mouseEventSource: eventSource,
             mouseType: .mouseMoved,
             mouseCursorPosition: point,
             mouseButton: .left
-        ) else { return }
-        
-        applyModifiers(to: cgEvent, from: event)
-        cgEvent.post(tap: .cghidEventTap)
+        ) {
+            applyModifiers(to: cgEvent, from: event)
+            cgEvent.post(tap: .cghidEventTap)
+        }
     }
     
     private func injectMouseDown(_ event: InputEvent) {
-        guard let x = event.x, let y = event.y, let button = event.button else { return }
+        guard let button = event.button else { return }
         
-        let point = transformCoordinates(x: x, y: y)
-        currentMousePosition = point
+        // Use the ACTUAL current cursor position, not remote coordinates
+        let point = getCurrentPosition()
         
         let (mouseType, cgButton) = mouseTypeAndButton(for: button, isDown: true)
         
@@ -128,10 +241,10 @@ final class EventInjectionService {
     }
     
     private func injectMouseUp(_ event: InputEvent) {
-        guard let x = event.x, let y = event.y, let button = event.button else { return }
+        guard let button = event.button else { return }
         
-        let point = transformCoordinates(x: x, y: y)
-        currentMousePosition = point
+        // Use the ACTUAL current cursor position, not remote coordinates
+        let point = getCurrentPosition()
         
         let (mouseType, cgButton) = mouseTypeAndButton(for: button, isDown: false)
         
@@ -147,10 +260,27 @@ final class EventInjectionService {
     }
     
     private func injectMouseDrag(_ event: InputEvent) {
-        guard let x = event.x, let y = event.y, let button = event.button else { return }
+        guard let button = event.button else { return }
         
-        let point = transformCoordinates(x: x, y: y)
-        currentMousePosition = point
+        // Apply deltas for drag movement (similar to mouseMove)
+        if let deltaX = event.mouseDeltaX, let deltaY = event.mouseDeltaY,
+           (deltaX != 0 || deltaY != 0) {
+            let actualPosition = getCurrentPosition()
+            let newX = actualPosition.x + CGFloat(deltaX)
+            let newY = actualPosition.y + CGFloat(deltaY)
+            
+            let mainDisplay = CGMainDisplayID()
+            let bounds = CGDisplayBounds(mainDisplay)
+            let clampedX = max(bounds.minX, min(bounds.maxX - 1, newX))
+            let clampedY = max(bounds.minY, min(bounds.maxY - 1, newY))
+            
+            let point = CGPoint(x: clampedX, y: clampedY)
+            currentMousePosition = point
+            CGWarpMouseCursorPosition(point)
+        }
+        
+        // Use the current cursor position for the drag event
+        let point = getCurrentPosition()
         
         let mouseType: CGEventType
         switch button {
@@ -228,16 +358,22 @@ final class EventInjectionService {
     // MARK: - Private Methods - Screen Transition
     
     private func handleScreenEnter(_ event: InputEvent) {
-        guard let edge = event.screenEdge, let entryX = event.entryX, let entryY = event.entryY else { return }
+        debugLog("handleScreenEnter: edge=\(String(describing: event.screenEdge)), entryX=\(String(describing: event.entryX)), entryY=\(String(describing: event.entryY))")
+        guard let edge = event.screenEdge, let entryX = event.entryX, let entryY = event.entryY else {
+            debugLog("handleScreenEnter: Missing required fields!")
+            return
+        }
         
         // Calculate entry position based on edge and relative position
         let entryPoint = calculateEntryPoint(edge: edge, relativeX: entryX, relativeY: entryY)
+        debugLog("handleScreenEnter: calculated entryPoint=\(entryPoint)")
         
         // Move cursor to entry point
         moveMouse(to: entryPoint)
         
         // Show cursor
         setCursorVisible(true)
+        debugLog("handleScreenEnter: complete")
     }
     
     private func calculateEntryPoint(edge: ScreenEdge, relativeX: Float, relativeY: Float) -> CGPoint {

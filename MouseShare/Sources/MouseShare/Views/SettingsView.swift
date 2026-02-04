@@ -377,8 +377,3 @@ struct AboutView: View {
     }
 }
 
-// MARK: - Preview
-
-#Preview {
-    SettingsView(controller: MouseShareController())
-}
