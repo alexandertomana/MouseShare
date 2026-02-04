@@ -241,19 +241,22 @@ final class InputNetworkService {
     
     /// Read a length-prefixed message from the socket
     private func readLengthPrefixedMessage(from channel: DispatchIO, socket: Int32, host: String) {
+        debugLogNetwork("readLengthPrefixedMessage: starting read for socket \(socket)")
         // First read the 4-byte length header
         channel.read(offset: 0, length: 4, queue: .main) { [weak self] done, data, error in
             guard let self = self else { return }
             
+            self.debugLogNetwork("Read callback: done=\(done), dataCount=\(data?.count ?? 0), error=\(error)")
+            
             if error != 0 {
-                print("InputNetworkService: Read error: \(error)")
+                self.debugLogNetwork("Read error: \(error)")
                 channel.close()
                 return
             }
             
             guard let data = data, data.count == 4 else {
-                if done {
-                    print("InputNetworkService: Connection closed from \(host)")
+                if done && (data == nil || data!.count == 0) {
+                    self.debugLogNetwork("Connection closed from \(host) (done with no data)")
                     channel.close()
                 }
                 return
@@ -269,8 +272,11 @@ final class InputNetworkService {
             }
             
             // Read the message body
+            self.debugLogNetwork("Reading body of \(length) bytes...")
             channel.read(offset: 0, length: Int(length), queue: .main) { [weak self] done, bodyData, error in
                 guard let self = self else { return }
+                
+                self.debugLogNetwork("Body read callback: done=\(done), bodyCount=\(bodyData?.count ?? 0), error=\(error)")
                 
                 if error != 0 {
                     self.debugLogNetwork("Body read error: \(error)")
@@ -281,11 +287,13 @@ final class InputNetworkService {
                 if let bodyData = bodyData, bodyData.count > 0 {
                     // Convert to Data and process
                     let messageData = Data(bodyData)
+                    self.debugLogNetwork("Processing message of \(messageData.count) bytes")
                     self.processIncomingBSDMessage(messageData, from: host, channel: channel, socket: socket)
                 }
                 
                 // Always continue reading for more messages (done just means this read is complete)
                 // Only stop if there was an error (handled above) or channel was closed
+                self.debugLogNetwork("Continuing read loop...")
                 self.readLengthPrefixedMessage(from: channel, socket: socket, host: host)
             }
         }
