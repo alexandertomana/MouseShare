@@ -62,6 +62,11 @@ final class MouseShareController: ObservableObject {
     private var pendingTransitionPeer: Peer?
     private var pendingTransitionEdge: ScreenEdge?
     
+    // Track which edge we entered from when being controlled (to know which edge returns us)
+    private var controlledEntryEdge: ScreenEdge?
+    // Track if cursor has moved away from the entry edge (to prevent immediate return)
+    private var hasMovedAwayFromEntryEdge: Bool = false
+    
     // MARK: - Initialization
     
     init() {
@@ -744,6 +749,12 @@ extension MouseShareController: InputNetworkDelegate {
                 debugLog("Received screenEnter event from \(peerId)")
                 if let peer = connectedPeers.first(where: { $0.id == peerId }) {
                     debugLog("Found peer \(peer.name), transitioning to controlled")
+                    
+                    // Store which edge we entered from (to know which edge returns us)
+                    controlledEntryEdge = event.screenEdge
+                    hasMovedAwayFromEntryEdge = false  // Reset - must move away before can return
+                    debugLog("Entry edge: \(String(describing: controlledEntryEdge))")
+                    
                     transitionToControlled(by: peer)
                     
                     // Send acknowledgment back to the controlling peer
@@ -816,35 +827,59 @@ extension MouseShareController: InputNetworkDelegate {
     
     /// Check if cursor position has crossed an edge to return control to the controller
     private func checkForReturnEdgeCrossing(x: Float, y: Float, controllerPeerId: UUID) {
+        // Only check for return if we know which edge we entered from
+        guard let entryEdge = controlledEntryEdge else { return }
+        
+        // Get the ACTUAL current cursor position (not the remote coordinates)
+        let currentPosition = NSEvent.mouseLocation
         let bounds = DisplayInfo.combinedBounds
-        let point = CGPoint(x: CGFloat(x), y: CGFloat(y))
-        let threshold: CGFloat = 2.0
         
-        // Check each edge for crossing
-        var crossedEdge: ScreenEdge? = nil
+        // macOS screen coordinates have origin at bottom-left, flip Y for our check
+        let flippedY = (NSScreen.main?.frame.height ?? bounds.height) - currentPosition.y
+        let point = CGPoint(x: currentPosition.x, y: flippedY)
         
-        if point.x <= bounds.minX + threshold {
-            crossedEdge = .left
-        } else if point.x >= bounds.maxX - threshold {
-            crossedEdge = .right
-        } else if point.y <= bounds.minY + threshold {
-            crossedEdge = .top
-        } else if point.y >= bounds.maxY - threshold {
-            crossedEdge = .bottom
+        let edgeThreshold: CGFloat = 5.0
+        let awayThreshold: CGFloat = 50.0  // Must move 50px away before can return
+        
+        // Check if cursor is at the entry edge
+        var atEntryEdge = false
+        var distanceFromEntryEdge: CGFloat = 0
+        
+        switch entryEdge {
+        case .left:
+            distanceFromEntryEdge = point.x - bounds.minX
+            atEntryEdge = distanceFromEntryEdge <= edgeThreshold
+        case .right:
+            distanceFromEntryEdge = bounds.maxX - point.x
+            atEntryEdge = distanceFromEntryEdge <= edgeThreshold
+        case .top:
+            distanceFromEntryEdge = point.y - bounds.minY
+            atEntryEdge = distanceFromEntryEdge <= edgeThreshold
+        case .bottom:
+            distanceFromEntryEdge = bounds.maxY - point.y
+            atEntryEdge = distanceFromEntryEdge <= edgeThreshold
         }
         
-        // If cursor crossed an edge, check if there's a linked peer (the controller)
-        if let edge = crossedEdge {
-            // When controlled, we should return to the controller
-            // The "return" edge is opposite to the entry edge
-            // For simplicity, just return control on any edge crossing while controlled
-            debugLog("Cursor crossed \(edge.displayName) edge while controlled - returning control")
+        // First, check if cursor has moved away from the entry edge
+        if !hasMovedAwayFromEntryEdge {
+            if distanceFromEntryEdge > awayThreshold {
+                hasMovedAwayFromEntryEdge = true
+                debugLog("Cursor moved away from entry edge (distance: \(distanceFromEntryEdge))")
+            }
+            return  // Don't check for return until we've moved away
+        }
+        
+        // Now check if cursor has returned to the entry edge
+        if atEntryEdge {
+            debugLog("Cursor returned to \(entryEdge.displayName) edge - returning control. pos=\(point)")
             
             // Send screenLeave to tell controller we're returning
-            let leaveEvent = InputEvent.screenLeave(edge: edge)
+            let leaveEvent = InputEvent.screenLeave(edge: entryEdge)
             inputNetworkService?.send(leaveEvent, to: controllerPeerId)
             
-            // Return to local
+            // Clear state and return to local
+            controlledEntryEdge = nil
+            hasMovedAwayFromEntryEdge = false
             returnToLocalControl()
         }
     }
