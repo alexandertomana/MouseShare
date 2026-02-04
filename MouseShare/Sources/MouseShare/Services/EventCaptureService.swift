@@ -275,13 +275,19 @@ final class EventCaptureService {
             return .mouseUp(x: x, y: y, button: .center)
             
         case .leftMouseDragged:
-            return .mouseDrag(x: x, y: y, button: .left)
+            let deltaX = Float(event.getDoubleValueField(.mouseEventDeltaX))
+            let deltaY = Float(event.getDoubleValueField(.mouseEventDeltaY))
+            return .mouseDrag(x: x, y: y, button: .left, deltaX: deltaX, deltaY: deltaY)
             
         case .rightMouseDragged:
-            return .mouseDrag(x: x, y: y, button: .right)
+            let deltaX = Float(event.getDoubleValueField(.mouseEventDeltaX))
+            let deltaY = Float(event.getDoubleValueField(.mouseEventDeltaY))
+            return .mouseDrag(x: x, y: y, button: .right, deltaX: deltaX, deltaY: deltaY)
             
         case .otherMouseDragged:
-            return .mouseDrag(x: x, y: y, button: .center)
+            let deltaX = Float(event.getDoubleValueField(.mouseEventDeltaX))
+            let deltaY = Float(event.getDoubleValueField(.mouseEventDeltaY))
+            return .mouseDrag(x: x, y: y, button: .center, deltaX: deltaX, deltaY: deltaY)
             
         case .scrollWheel:
             let deltaX = Float(event.getDoubleValueField(.scrollWheelEventDeltaAxis2))

@@ -218,10 +218,10 @@ final class EventInjectionService {
     }
     
     private func injectMouseDown(_ event: InputEvent) {
-        guard let x = event.x, let y = event.y, let button = event.button else { return }
+        guard let button = event.button else { return }
         
-        let point = transformCoordinates(x: x, y: y)
-        currentMousePosition = point
+        // Use the ACTUAL current cursor position, not remote coordinates
+        let point = getCurrentPosition()
         
         let (mouseType, cgButton) = mouseTypeAndButton(for: button, isDown: true)
         
@@ -241,10 +241,10 @@ final class EventInjectionService {
     }
     
     private func injectMouseUp(_ event: InputEvent) {
-        guard let x = event.x, let y = event.y, let button = event.button else { return }
+        guard let button = event.button else { return }
         
-        let point = transformCoordinates(x: x, y: y)
-        currentMousePosition = point
+        // Use the ACTUAL current cursor position, not remote coordinates
+        let point = getCurrentPosition()
         
         let (mouseType, cgButton) = mouseTypeAndButton(for: button, isDown: false)
         
@@ -260,10 +260,27 @@ final class EventInjectionService {
     }
     
     private func injectMouseDrag(_ event: InputEvent) {
-        guard let x = event.x, let y = event.y, let button = event.button else { return }
+        guard let button = event.button else { return }
         
-        let point = transformCoordinates(x: x, y: y)
-        currentMousePosition = point
+        // Apply deltas for drag movement (similar to mouseMove)
+        if let deltaX = event.mouseDeltaX, let deltaY = event.mouseDeltaY,
+           (deltaX != 0 || deltaY != 0) {
+            let actualPosition = getCurrentPosition()
+            let newX = actualPosition.x + CGFloat(deltaX)
+            let newY = actualPosition.y + CGFloat(deltaY)
+            
+            let mainDisplay = CGMainDisplayID()
+            let bounds = CGDisplayBounds(mainDisplay)
+            let clampedX = max(bounds.minX, min(bounds.maxX - 1, newX))
+            let clampedY = max(bounds.minY, min(bounds.maxY - 1, newY))
+            
+            let point = CGPoint(x: clampedX, y: clampedY)
+            currentMousePosition = point
+            CGWarpMouseCursorPosition(point)
+        }
+        
+        // Use the current cursor position for the drag event
+        let point = getCurrentPosition()
         
         let mouseType: CGEventType
         switch button {

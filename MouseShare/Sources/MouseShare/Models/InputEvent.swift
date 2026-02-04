@@ -138,14 +138,17 @@ struct InputEvent: Codable {
         )
     }
     
-    static func mouseDrag(x: Float, y: Float, button: MouseButton) -> InputEvent {
-        InputEvent(
+    static func mouseDrag(x: Float, y: Float, button: MouseButton, deltaX: Float = 0, deltaY: Float = 0) -> InputEvent {
+        var event = InputEvent(
             type: .mouseDrag,
             timestamp: currentTimestamp(),
             x: x,
             y: y,
             button: button
         )
+        event.mouseDeltaX = deltaX
+        event.mouseDeltaY = deltaY
+        return event
     }
     
     static func scroll(deltaX: Float, deltaY: Float, x: Float, y: Float) -> InputEvent {
