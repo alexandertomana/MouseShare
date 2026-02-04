@@ -292,11 +292,32 @@ final class InputNetworkService {
         }
     }
     
+    /// Write to debug log
+    private func debugLogNetwork(_ message: String) {
+        let logPath = "/tmp/mouseshare_debug.log"
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let line = "[\(timestamp)] [Network] \(message)\n"
+        if let data = line.data(using: .utf8) {
+            if FileManager.default.fileExists(atPath: logPath) {
+                if let handle = FileHandle(forWritingAtPath: logPath) {
+                    handle.seekToEndOfFile()
+                    handle.write(data)
+                    handle.closeFile()
+                }
+            } else {
+                try? data.write(to: URL(fileURLWithPath: logPath))
+            }
+        }
+        print(message)
+    }
+    
     /// Process a message from a BSD socket connection
     private func processIncomingBSDMessage(_ data: Data, from host: String, channel: DispatchIO, socket: Int32) {
+        debugLogNetwork("processIncomingBSDMessage: Received \(data.count) bytes from \(host)")
+        
         // Try to parse as handshake request first
         if let handshake = try? HandshakeRequest.deserialize(from: data) {
-            print("InputNetworkService: Received handshake from \(handshake.peerName) via BSD socket")
+            debugLogNetwork("Received handshake from \(handshake.peerName) via BSD socket")
             
             // Create a response and send it
             let response = HandshakeResponse(
@@ -699,8 +720,18 @@ final class InputNetworkService {
     }
     
     private func handleConnectionState(_ state: NWConnection.State, for connection: NWConnection, peerId: UUID) {
+        // Log to debug file
+        let logPath = "/tmp/mouseshare_debug.log"
+        let logLine = "[NWConnection] State for \(peerId): \(state)\n"
+        if let data = logLine.data(using: .utf8), let handle = FileHandle(forWritingAtPath: logPath) {
+            handle.seekToEndOfFile()
+            handle.write(data)
+            handle.closeFile()
+        }
+        
         switch state {
         case .ready:
+            print("InputNetworkService: Connection READY for \(peerId), sending handshake")
             // Send handshake
             sendHandshake(to: connection, encryptionEnabled: encryptionService != nil)
             // Wait for response
@@ -714,6 +745,12 @@ final class InputNetworkService {
         case .cancelled:
             cleanupConnection(for: peerId)
             delegate?.inputNetwork(self, didDisconnect: peerId)
+            
+        case .waiting(let error):
+            print("InputNetworkService: Connection waiting: \(error)")
+            
+        case .preparing:
+            print("InputNetworkService: Connection preparing...")
             
         default:
             break
