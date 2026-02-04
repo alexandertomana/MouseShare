@@ -359,24 +359,33 @@ final class InputNetworkService {
         }
         // Try to parse as input packet
         else if let packet = try? InputPacket.deserialize(from: data) {
+            debugLogNetwork("Received InputPacket with \(packet.events.count) events, seq=\(packet.sequenceNumber)")
+            
             // Find the peer ID from the socket mapping
             let peerId = connectionQueue.sync { bsdSocketToPeerId[socket] }
             
             if let peerId = peerId {
+                debugLogNetwork("Found peer \(peerId) for socket \(socket)")
+                
                 // Check sequence
                 let expectedSeq = (receiveSequences[peerId] ?? 0) + 1
                 if packet.sequenceNumber != expectedSeq && expectedSeq > 1 {
-                    print("InputNetworkService: BSD packet out of order (expected \(expectedSeq), got \(packet.sequenceNumber))")
+                    debugLogNetwork("BSD packet out of order (expected \(expectedSeq), got \(packet.sequenceNumber))")
                 }
                 receiveSequences[peerId] = packet.sequenceNumber
                 
                 // Deliver events to delegate
                 for event in packet.events {
+                    debugLogNetwork("Delivering event type \(event.type) to delegate")
                     delegate?.inputNetwork(self, didReceive: event, from: peerId)
                 }
             } else {
-                print("InputNetworkService: Received event from unknown BSD socket \(socket)")
+                debugLogNetwork("ERROR: Received event from unknown BSD socket \(socket)")
+                let allMappings = connectionQueue.sync { bsdSocketToPeerId }
+                debugLogNetwork("Known socket mappings: \(allMappings)")
             }
+        } else {
+            debugLogNetwork("ERROR: Could not parse message as handshake or input packet")
         }
     }
     
@@ -520,12 +529,21 @@ final class InputNetworkService {
     
     /// Send an input event to a peer
     func send(_ event: InputEvent, to peerId: UUID) {
+        debugLogNetwork("send() called for event type \(event.type) to peer \(peerId)")
+        
         // Check for NWConnection first, then BSD connection
         let nwConnection = connectionQueue.sync { connections[peerId] }
         let bsdChannel = connectionQueue.sync { bsdConnections[peerId] }
         
+        debugLogNetwork("send() - NWConnection: \(nwConnection != nil), BSDChannel: \(bsdChannel != nil)")
+        
         guard nwConnection != nil || bsdChannel != nil else {
-            print("InputNetworkService: No connection found for peer \(peerId)")
+            debugLogNetwork("ERROR: No connection found for peer \(peerId)")
+            // List all known connections for debugging
+            let allNW = connectionQueue.sync { Array(connections.keys) }
+            let allBSD = connectionQueue.sync { Array(bsdConnections.keys) }
+            debugLogNetwork("Known NWConnections: \(allNW)")
+            debugLogNetwork("Known BSDConnections: \(allBSD)")
             return
         }
         
@@ -534,6 +552,7 @@ final class InputNetworkService {
         
         do {
             var data = try packet.serialize()
+            debugLogNetwork("Serialized packet: \(data.count) bytes, seq=\(sendSequence)")
             
             // Encrypt if enabled
             if let encryption = encryptionService {
@@ -546,18 +565,22 @@ final class InputNetworkService {
             framedData.append(data)
             
             if let connection = nwConnection {
+                debugLogNetwork("Sending \(framedData.count) bytes via NWConnection")
                 connection.send(content: framedData, completion: .contentProcessed { [weak self] error in
                     if let error = error {
-                        print("InputNetworkService: Send error: \(error)")
+                        self?.debugLogNetwork("NWConnection send error: \(error)")
                         self?.delegate?.inputNetwork(self!, connectionError: error, for: peerId)
+                    } else {
+                        self?.debugLogNetwork("NWConnection send SUCCESS")
                     }
                 })
             } else if let channel = bsdChannel {
+                debugLogNetwork("Sending via BSD channel")
                 sendViaBSD(data: data, channel: channel)
             }
             
         } catch {
-            print("InputNetworkService: Serialization error: \(error)")
+            debugLogNetwork("Serialization error: \(error)")
         }
     }
     
@@ -668,15 +691,18 @@ final class InputNetworkService {
     
     /// Register a connection after successful handshake
     func registerConnection(_ connection: NWConnection, for peerId: UUID) {
+        debugLogNetwork("registerConnection() for peer \(peerId)")
         let connectionId = ObjectIdentifier(connection)
         
         connectionQueue.async(flags: .barrier) { [weak self] in
             self?.pendingConnections.removeValue(forKey: connectionId)
             self?.connections[peerId] = connection
             self?.receiveSequences[peerId] = 0
+            self?.debugLogNetwork("Connection registered for \(peerId), total connections: \(self?.connections.count ?? 0)")
         }
         
         // Start receiving
+        debugLogNetwork("Starting receiveData for \(peerId)")
         receiveData(from: connection, peerId: peerId)
     }
     

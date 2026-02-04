@@ -24,6 +24,24 @@ final class EventInjectionService {
         // Create event source for posting events
         eventSource = CGEventSource(stateID: .combinedSessionState)
         updateLocalScreenBounds()
+        debugLog("EventInjectionService initialized, bounds: \(localScreenBounds)")
+    }
+    
+    private func debugLog(_ message: String) {
+        let logPath = "/tmp/mouseshare_debug.log"
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let line = "[\(timestamp)] [Injection] \(message)\n"
+        if let data = line.data(using: .utf8) {
+            if FileManager.default.fileExists(atPath: logPath) {
+                if let handle = FileHandle(forWritingAtPath: logPath) {
+                    handle.seekToEndOfFile()
+                    handle.write(data)
+                    handle.closeFile()
+                }
+            } else {
+                try? data.write(to: URL(fileURLWithPath: logPath))
+            }
+        }
     }
     
     // MARK: - Public Methods
@@ -40,6 +58,7 @@ final class EventInjectionService {
     
     /// Inject an input event into the system
     func inject(_ event: InputEvent) {
+        debugLog("inject() called with event type: \(event.type)")
         switch event.type {
         case .mouseMove:
             injectMouseMove(event)
@@ -58,26 +77,34 @@ final class EventInjectionService {
         case .flagsChanged:
             injectFlagsChanged(event)
         case .screenEnter:
+            debugLog("Handling screenEnter event")
             handleScreenEnter(event)
         default:
+            debugLog("Unknown event type: \(event.type)")
             break
         }
     }
     
     /// Move mouse to a specific position (used for screen enter)
     func moveMouse(to point: CGPoint) {
+        debugLog("moveMouse() called - moving cursor to \(point)")
         currentMousePosition = point
         CGWarpMouseCursorPosition(point)
+        debugLog("CGWarpMouseCursorPosition called")
         
         // Optionally also post a mouse move event
         if let moveEvent = CGEvent(mouseEventSource: eventSource, mouseType: .mouseMoved,
                                    mouseCursorPosition: point, mouseButton: .left) {
             moveEvent.post(tap: .cghidEventTap)
+            debugLog("Mouse move event posted")
+        } else {
+            debugLog("Failed to create mouse move event")
         }
     }
     
     /// Show or hide the cursor
     func setCursorVisible(_ visible: Bool) {
+        debugLog("setCursorVisible(\(visible))")
         if visible {
             CGDisplayShowCursor(CGMainDisplayID())
         } else {
@@ -228,16 +255,22 @@ final class EventInjectionService {
     // MARK: - Private Methods - Screen Transition
     
     private func handleScreenEnter(_ event: InputEvent) {
-        guard let edge = event.screenEdge, let entryX = event.entryX, let entryY = event.entryY else { return }
+        debugLog("handleScreenEnter: edge=\(String(describing: event.screenEdge)), entryX=\(String(describing: event.entryX)), entryY=\(String(describing: event.entryY))")
+        guard let edge = event.screenEdge, let entryX = event.entryX, let entryY = event.entryY else {
+            debugLog("handleScreenEnter: Missing required fields!")
+            return
+        }
         
         // Calculate entry position based on edge and relative position
         let entryPoint = calculateEntryPoint(edge: edge, relativeX: entryX, relativeY: entryY)
+        debugLog("handleScreenEnter: calculated entryPoint=\(entryPoint)")
         
         // Move cursor to entry point
         moveMouse(to: entryPoint)
         
         // Show cursor
         setCursorVisible(true)
+        debugLog("handleScreenEnter: complete")
     }
     
     private func calculateEntryPoint(edge: ScreenEdge, relativeX: Float, relativeY: Float) -> CGPoint {
