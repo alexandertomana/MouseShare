@@ -403,6 +403,7 @@ final class MouseShareController: ObservableObject {
             entryY = (edge == .top) ? 0.0 : 1.0
         }
         let enterEvent = InputEvent.screenEnter(edge: edge.opposite, x: entryX, y: entryY)
+        debugLog("Sending screenEnter event to \(peer.name): edge=\(edge.opposite), x=\(entryX), y=\(entryY)")
         inputNetworkService?.send(enterEvent, to: peer.id)
         
         // Start event batching
@@ -729,13 +730,16 @@ extension MouseShareController: InputNetworkDelegate {
             switch event.type {
             case .screenEnter:
                 // Remote peer is entering our screen
+                debugLog("Received screenEnter event from \(peerId)")
                 if let peer = connectedPeers.first(where: { $0.id == peerId }) {
+                    debugLog("Found peer \(peer.name), transitioning to controlled")
                     transitionToControlled(by: peer)
                     
                     // Send acknowledgment back to the controlling peer
                     if let edge = event.screenEdge {
                         let ackEvent = InputEvent.screenEnterAck(edge: edge)
                         inputNetworkService?.send(ackEvent, to: peerId)
+                        debugLog("Sent screenEnterAck")
                     }
                     
                     // Move cursor to entry point
@@ -746,8 +750,11 @@ extension MouseShareController: InputNetworkDelegate {
                             edge: edge,
                             relativePosition: CGFloat(edge == .left || edge == .right ? entryY : entryX)
                         ) ?? CGPoint(x: 100, y: 100)
+                        debugLog("Moving cursor to \(entryPoint)")
                         eventInjectionService?.moveMouse(to: entryPoint)
                     }
+                } else {
+                    debugLog("ERROR: No peer found for \(peerId) in connectedPeers")
                 }
                 
             case .screenEnterAck:
