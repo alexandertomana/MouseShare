@@ -273,7 +273,7 @@ final class InputNetworkService {
                 guard let self = self else { return }
                 
                 if error != 0 {
-                    print("InputNetworkService: Body read error: \(error)")
+                    self.debugLogNetwork("Body read error: \(error)")
                     channel.close()
                     return
                 }
@@ -284,10 +284,9 @@ final class InputNetworkService {
                     self.processIncomingBSDMessage(messageData, from: host, channel: channel, socket: socket)
                 }
                 
-                // Continue reading
-                if !done {
-                    self.readLengthPrefixedMessage(from: channel, socket: socket, host: host)
-                }
+                // Always continue reading for more messages (done just means this read is complete)
+                // Only stop if there was an error (handled above) or channel was closed
+                self.readLengthPrefixedMessage(from: channel, socket: socket, host: host)
             }
         }
     }
