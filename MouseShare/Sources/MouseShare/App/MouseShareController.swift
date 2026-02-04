@@ -831,17 +831,25 @@ extension MouseShareController: InputNetworkDelegate {
         guard let entryEdge = controlledEntryEdge else { return }
         
         // Get the ACTUAL current cursor position (not the remote coordinates)
-        let currentPosition = NSEvent.mouseLocation
+        // NSEvent.mouseLocation is in screen coordinates with origin at bottom-left of primary screen
+        let mouseLocation = NSEvent.mouseLocation
         let bounds = DisplayInfo.combinedBounds
         
-        // macOS screen coordinates have origin at bottom-left, flip Y for our check
-        let flippedY = (NSScreen.main?.frame.height ?? bounds.height) - currentPosition.y
-        let point = CGPoint(x: currentPosition.x, y: flippedY)
+        // Use the mouse location directly - it's already in the correct coordinate space
+        // for comparison with DisplayInfo.combinedBounds (both use screen coordinates)
+        let point = mouseLocation
         
-        let edgeThreshold: CGFloat = 5.0
-        let awayThreshold: CGFloat = 50.0  // Must move 50px away before can return
+        // Log first time for debugging
+        if !hasMovedAwayFromEntryEdge {
+            debugLog("Edge check: mouseLocation=\(mouseLocation), bounds=\(bounds), entryEdge=\(entryEdge)")
+        }
+        
+        let edgeThreshold: CGFloat = 10.0
+        let awayThreshold: CGFloat = 100.0  // Must move 100px away before can return
         
         // Check if cursor is at the entry edge
+        // Note: In macOS screen coordinates, Y=0 is at BOTTOM, Y increases going UP
+        // So "top" of screen = maxY, "bottom" of screen = minY
         var atEntryEdge = false
         var distanceFromEntryEdge: CGFloat = 0
         
@@ -853,11 +861,18 @@ extension MouseShareController: InputNetworkDelegate {
             distanceFromEntryEdge = bounds.maxX - point.x
             atEntryEdge = distanceFromEntryEdge <= edgeThreshold
         case .top:
-            distanceFromEntryEdge = point.y - bounds.minY
-            atEntryEdge = distanceFromEntryEdge <= edgeThreshold
-        case .bottom:
+            // Top of screen = maxY in screen coordinates
             distanceFromEntryEdge = bounds.maxY - point.y
             atEntryEdge = distanceFromEntryEdge <= edgeThreshold
+        case .bottom:
+            // Bottom of screen = minY in screen coordinates
+            distanceFromEntryEdge = point.y - bounds.minY
+            atEntryEdge = distanceFromEntryEdge <= edgeThreshold
+        }
+        
+        // Log distance for debugging (only occasionally to avoid spam)
+        if Int.random(in: 0..<100) == 0 {
+            debugLog("Distance from \(entryEdge) edge: \(distanceFromEntryEdge), pos=\(point)")
         }
         
         // First, check if cursor has moved away from the entry edge
