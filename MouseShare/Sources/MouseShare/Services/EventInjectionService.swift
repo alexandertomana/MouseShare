@@ -121,65 +121,99 @@ final class EventInjectionService {
         }
     }
     
+    /// Park cursor at center of screen (used when controlling remote to prevent drift)
+    func parkCursor() {
+        let mainDisplay = CGMainDisplayID()
+        let bounds = CGDisplayBounds(mainDisplay)
+        let center = CGPoint(x: bounds.midX, y: bounds.midY)
+        debugLog("parkCursor() at \(center)")
+        CGWarpMouseCursorPosition(center)
+        currentMousePosition = center
+    }
+    
+    /// Warp cursor to a specific screen edge (used when returning from remote control)
+    /// - Parameters:
+    ///   - edge: The edge to warp to
+    ///   - relativePosition: Position along the edge (0.0 to 1.0)
+    func warpToEdge(_ edge: ScreenEdge, relativePosition: CGFloat) {
+        let mainDisplay = CGMainDisplayID()
+        let bounds = CGDisplayBounds(mainDisplay)
+        let inset: CGFloat = 20  // Stay slightly inside the edge
+        
+        var point: CGPoint
+        switch edge {
+        case .left:
+            point = CGPoint(x: bounds.minX + inset, y: bounds.minY + relativePosition * bounds.height)
+        case .right:
+            point = CGPoint(x: bounds.maxX - inset, y: bounds.minY + relativePosition * bounds.height)
+        case .top:
+            point = CGPoint(x: bounds.minX + relativePosition * bounds.width, y: bounds.minY + inset)
+        case .bottom:
+            point = CGPoint(x: bounds.minX + relativePosition * bounds.width, y: bounds.maxY - inset)
+        }
+        
+        debugLog("warpToEdge(\(edge), \(relativePosition)) -> \(point)")
+        CGWarpMouseCursorPosition(point)
+        currentMousePosition = point
+    }
+    
+    /// Get the current cursor position (useful for calculating return position)
+    func getCurrentPosition() -> CGPoint {
+        if let locEvent = CGEvent(source: nil) {
+            return locEvent.location
+        }
+        return currentMousePosition
+    }
+    
     // MARK: - Private Methods - Mouse Events
     
     private func injectMouseMove(_ event: InputEvent) {
-        // Use mouse deltas for relative movement if available
-        if let deltaX = event.mouseDeltaX, let deltaY = event.mouseDeltaY,
-           (deltaX != 0 || deltaY != 0) {
-            // Get the ACTUAL current cursor position to avoid drift
-            // CGEvent location is in CG coordinates (top-left origin)
-            let actualPosition: CGPoint
-            if let locEvent = CGEvent(source: nil) {
-                actualPosition = locEvent.location
-            } else {
-                actualPosition = currentMousePosition
-            }
-            
-            // Apply delta to actual position
-            let newX = actualPosition.x + CGFloat(deltaX)
-            let newY = actualPosition.y + CGFloat(deltaY)
-            
-            // Clamp to screen bounds (use main display bounds for CG coordinates)
-            let mainDisplay = CGMainDisplayID()
-            let bounds = CGDisplayBounds(mainDisplay)
-            let clampedX = max(bounds.minX, min(bounds.maxX - 1, newX))
-            let clampedY = max(bounds.minY, min(bounds.maxY - 1, newY))
-            
-            let point = CGPoint(x: clampedX, y: clampedY)
-            currentMousePosition = point
-            
-            // Warp cursor to new position
-            CGWarpMouseCursorPosition(point)
-            
-            // Also post mouse move event for apps that need it
-            if let cgEvent = CGEvent(
-                mouseEventSource: eventSource,
-                mouseType: .mouseMoved,
-                mouseCursorPosition: point,
-                mouseButton: .left
-            ) {
-                applyModifiers(to: cgEvent, from: event)
-                cgEvent.post(tap: .cghidEventTap)
-            }
-        } else if let x = event.x, let y = event.y {
-            // Fallback to absolute coordinates
-            let point = transformCoordinates(x: x, y: y)
-            currentMousePosition = point
-            
-            CGWarpMouseCursorPosition(point)
-            
-            if let cgEvent = CGEvent(
-                mouseEventSource: eventSource,
-                mouseType: .mouseMoved,
-                mouseCursorPosition: point,
-                mouseButton: .left
-            ) {
-                applyModifiers(to: cgEvent, from: event)
-                cgEvent.post(tap: .cghidEventTap)
-            }
+        // ONLY use deltas for mouse movement - NEVER fall back to absolute coordinates
+        // Absolute coordinates come from the remote machine and are meaningless here
+        guard let deltaX = event.mouseDeltaX, let deltaY = event.mouseDeltaY else {
+            // No deltas provided - this shouldn't happen for mouseMove events
+            debugLog("injectMouseMove: no deltas provided, ignoring")
+            return
+        }
+        
+        // If no movement, don't do anything - prevents jumping from absolute coords
+        if deltaX == 0 && deltaY == 0 {
+            return
+        }
+        
+        // Get the ACTUAL current cursor position using CGEvent (CG coordinates, top-left origin)
+        let actualPosition: CGPoint
+        if let locEvent = CGEvent(source: nil) {
+            actualPosition = locEvent.location
         } else {
-            debugLog("injectMouseMove: missing coordinates")
+            actualPosition = currentMousePosition
+        }
+        
+        // Apply delta to actual position
+        let newX = actualPosition.x + CGFloat(deltaX)
+        let newY = actualPosition.y + CGFloat(deltaY)
+        
+        // Clamp to screen bounds (use main display bounds for CG coordinates)
+        let mainDisplay = CGMainDisplayID()
+        let bounds = CGDisplayBounds(mainDisplay)
+        let clampedX = max(bounds.minX, min(bounds.maxX - 1, newX))
+        let clampedY = max(bounds.minY, min(bounds.maxY - 1, newY))
+        
+        let point = CGPoint(x: clampedX, y: clampedY)
+        currentMousePosition = point
+        
+        // Warp cursor to new position
+        CGWarpMouseCursorPosition(point)
+        
+        // Also post mouse move event for apps that need it
+        if let cgEvent = CGEvent(
+            mouseEventSource: eventSource,
+            mouseType: .mouseMoved,
+            mouseCursorPosition: point,
+            mouseButton: .left
+        ) {
+            applyModifiers(to: cgEvent, from: event)
+            cgEvent.post(tap: .cghidEventTap)
         }
     }
     

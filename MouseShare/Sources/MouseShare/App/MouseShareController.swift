@@ -67,6 +67,10 @@ final class MouseShareController: ObservableObject {
     // Track if cursor has moved away from the entry edge (to prevent immediate return)
     private var hasMovedAwayFromEntryEdge: Bool = false
     
+    // Track the edge and position we exited from (for returning to correct position)
+    private var controllingExitEdge: ScreenEdge?
+    private var controllingExitPosition: CGFloat = 0.5
+    
     // MARK: - Initialization
     
     init() {
@@ -388,14 +392,21 @@ final class MouseShareController: ObservableObject {
         pendingTransitionPeer = peer
         pendingTransitionEdge = edge
         
+        // Store where we exited from (for returning to correct position)
+        controllingExitEdge = edge
+        controllingExitPosition = position
+        
         // Tell the capture service to forward events instead of local processing
         eventCaptureService?.setControlling(false)
         
-        // Hide local cursor (call multiple times to ensure it's hidden)
+        // Hide local cursor
         eventInjectionService?.setCursorVisible(false)
         CGDisplayHideCursor(CGMainDisplayID())
         
-        // Also associate mouse with cursor to prevent drift
+        // Park cursor at center of screen to prevent drift issues
+        eventInjectionService?.parkCursor()
+        
+        // Disassociate mouse from cursor - physical mouse movement won't move visible cursor
         CGAssociateMouseAndMouseCursorPosition(0)
         
         // Send screen enter event to peer
@@ -512,10 +523,17 @@ final class MouseShareController: ObservableObject {
         // Tell capture service to process events locally
         eventCaptureService?.setControlling(true)
         
-        // Re-associate mouse and cursor (was disassociated when controlling)
+        // Re-associate mouse and cursor FIRST (was disassociated when controlling)
         CGAssociateMouseAndMouseCursorPosition(1)
         
-        // Show cursor (call multiple times to ensure visible)
+        // Warp cursor to the correct edge position BEFORE showing it
+        // This ensures cursor appears at the edge we left from, not wherever it drifted
+        if let exitEdge = controllingExitEdge {
+            debugLog("Returning to local: warping to \(exitEdge) edge at position \(controllingExitPosition)")
+            eventInjectionService?.warpToEdge(exitEdge, relativePosition: controllingExitPosition)
+        }
+        
+        // Now show cursor (after warping to correct position)
         CGDisplayShowCursor(CGMainDisplayID())
         eventInjectionService?.setCursorVisible(true)
         
@@ -524,6 +542,10 @@ final class MouseShareController: ObservableObject {
         
         // Reset screen edge state
         screenEdgeService?.resetTransitionState()
+        
+        // Clear tracking state
+        controllingExitEdge = nil
+        controllingExitPosition = 0.5
         
         if let peer = previousPeer {
             peer.state = .connected
