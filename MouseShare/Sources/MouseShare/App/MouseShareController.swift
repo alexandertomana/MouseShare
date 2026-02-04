@@ -96,15 +96,41 @@ final class MouseShareController: ObservableObject {
     
     // MARK: - Public Methods
     
+    /// Write debug log to file for remote debugging
+    private func debugLog(_ message: String) {
+        let logPath = "/tmp/mouseshare_debug.log"
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let line = "[\(timestamp)] \(message)\n"
+        if let data = line.data(using: .utf8) {
+            if FileManager.default.fileExists(atPath: logPath) {
+                if let handle = FileHandle(forWritingAtPath: logPath) {
+                    handle.seekToEndOfFile()
+                    handle.write(data)
+                    handle.closeFile()
+                }
+            } else {
+                try? data.write(to: URL(fileURLWithPath: logPath))
+            }
+        }
+        print(message)  // Also print to console
+    }
+    
     /// Start all services
     func start() {
-        guard !isRunning else { return }
+        debugLog("start() called, isRunning=\(isRunning)")
+        guard !isRunning else { 
+            debugLog("Already running, returning")
+            return 
+        }
         
         // Check accessibility permission
+        debugLog("Checking accessibility permission: \(hasAccessibilityPermission)")
         if !hasAccessibilityPermission {
             hasAccessibilityPermission = EventCaptureService.requestAccessibilityPermission()
+            debugLog("After request, hasAccessibilityPermission=\(hasAccessibilityPermission)")
             if !hasAccessibilityPermission {
                 statusMessage = "Accessibility permission required"
+                debugLog("No accessibility permission, returning")
                 return
             }
         }
@@ -172,21 +198,24 @@ final class MouseShareController: ObservableObject {
     
     /// Connect to a peer
     func connect(to peer: Peer) {
+        debugLog("connect() called for peer: \(peer.name), isRunning=\(isRunning)")
         guard isRunning else { 
-            print("MouseShareController: Cannot connect - not running")
+            debugLog("Cannot connect - not running")
             return 
         }
         
+        debugLog("Peer endpoint: \(String(describing: peer.endpoint))")
         guard peer.endpoint != nil else {
-            print("MouseShareController: Cannot connect to \(peer.name) - no endpoint")
+            debugLog("Cannot connect to \(peer.name) - no endpoint")
             statusMessage = "No endpoint for \(peer.name)"
             return
         }
         
-        print("MouseShareController: Connecting to \(peer.name)...")
+        debugLog("Connecting to \(peer.name)...")
         peer.state = .connecting
         statusMessage = "Connecting to \(peer.name)..."
         inputNetworkService?.connect(to: peer)
+        debugLog("connect() call completed")
     }
     
     /// Disconnect from a peer
@@ -286,38 +315,44 @@ final class MouseShareController: ObservableObject {
     }
     
     private func startServices() -> Bool {
+        debugLog("startServices() called")
+        
         // Start event capture
         let eventCaptureResult = eventCaptureService?.start() ?? false
+        debugLog("Event capture result: \(eventCaptureResult)")
         if !eventCaptureResult {
-            print("MouseShareController: Failed to start event capture - check Accessibility permissions")
+            debugLog("Failed to start event capture - check Accessibility permissions")
             statusMessage = "Failed: Accessibility permission needed"
             return false
         }
-        print("MouseShareController: Event capture started successfully")
+        debugLog("Event capture started successfully")
         
         // Start network discovery
         let discoveryResult = networkDiscoveryService?.start() ?? false
+        debugLog("Network discovery result: \(discoveryResult)")
         if !discoveryResult {
-            print("MouseShareController: Failed to start network discovery")
+            debugLog("Failed to start network discovery")
             statusMessage = "Failed: Network discovery error"
             return false
         }
-        print("MouseShareController: Network discovery started successfully")
+        debugLog("Network discovery started successfully")
         
         // Start input network listener
         let listenerResult = inputNetworkService?.startListening() ?? false
+        debugLog("Input listener result: \(listenerResult)")
         if !listenerResult {
-            print("MouseShareController: Failed to start input listener - port may be in use")
+            debugLog("Failed to start input listener - port may be in use")
             statusMessage = "Failed: Port 24801 may be in use"
             return false
         }
-        print("MouseShareController: Input listener started successfully")
+        debugLog("Input listener started successfully")
         
         // Start clipboard monitoring if enabled
         if settings.clipboardSyncEnabled {
             clipboardService?.startMonitoring()
         }
         
+        debugLog("All services started successfully")
         return true
     }
     
