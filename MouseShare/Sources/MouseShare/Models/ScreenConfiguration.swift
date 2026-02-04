@@ -114,24 +114,72 @@ struct ScreenArrangement: Codable, Equatable {
     
     /// Update or add a remote screen
     mutating func updateRemoteScreen(peerId: UUID, name: String, width: Int, height: Int) {
+        // First check by peerId
         if let index = screens.firstIndex(where: { $0.peerId == peerId }) {
             screens[index].name = name
             screens[index].width = width
             screens[index].height = height
-        } else {
-            // Add new remote screen, position it to the right of local screens
-            let maxX = screens.map { $0.x + $0.width }.max() ?? 0
-            let newScreen = ArrangedScreen(
-                id: UUID(),
-                name: name,
-                width: width,
-                height: height,
-                x: maxX + 50,  // Small gap
-                y: 0,
-                isLocal: false,
-                peerId: peerId
-            )
-            screens.append(newScreen)
+            return
+        }
+        
+        // Also check by name to prevent duplicates from stale peer IDs
+        if let index = screens.firstIndex(where: { !$0.isLocal && $0.name == name }) {
+            screens[index].peerId = peerId
+            screens[index].width = width
+            screens[index].height = height
+            return
+        }
+        
+        // Add new remote screen, position it to the left of local screens
+        let minX = screens.map { $0.x }.min() ?? 0
+        let localHeight = screens.first(where: { $0.isLocal })?.height ?? height
+        let newScreen = ArrangedScreen(
+            id: UUID(),
+            name: name,
+            width: width,
+            height: height,
+            x: minX - width - 50,  // Position to the left
+            y: 0,
+            isLocal: false,
+            peerId: peerId
+        )
+        screens.append(newScreen)
+    }
+    
+    /// Remove all remote screens that aren't in the connected peers list
+    mutating func removeStaleRemoteScreens(connectedPeerIds: [UUID]) {
+        screens.removeAll { screen in
+            !screen.isLocal && (screen.peerId == nil || !connectedPeerIds.contains(screen.peerId!))
+        }
+    }
+    
+    /// Remove duplicate screens (keep first occurrence)
+    mutating func deduplicateScreens() {
+        var seenNames = Set<String>()
+        var seenPeerIds = Set<UUID>()
+        
+        screens = screens.filter { screen in
+            // Always keep local screens, deduplicate by name
+            if screen.isLocal {
+                if seenNames.contains(screen.name) {
+                    return false
+                }
+                seenNames.insert(screen.name)
+                return true
+            }
+            
+            // For remote screens, deduplicate by peerId or name
+            if let peerId = screen.peerId {
+                if seenPeerIds.contains(peerId) {
+                    return false
+                }
+                seenPeerIds.insert(peerId)
+            }
+            if seenNames.contains(screen.name) {
+                return false
+            }
+            seenNames.insert(screen.name)
+            return true
         }
     }
     

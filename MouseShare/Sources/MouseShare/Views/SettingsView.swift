@@ -115,8 +115,13 @@ struct DisplaySettingsView: View {
                         .font(.headline)
                     Spacer()
                     Button("Detect Displays") {
+                        // Clear stale remote screens first
+                        settings.screenConfig.arrangement.removeStaleRemoteScreens(
+                            connectedPeerIds: controller.connectedPeers.map { $0.id }
+                        )
+                        // Reinitialize local displays
                         settings.screenConfig.arrangement.initializeLocalDisplays()
-                        // Also add connected peers
+                        // Add connected peers
                         for peer in controller.connectedPeers {
                             settings.screenConfig.arrangement.updateRemoteScreen(
                                 peerId: peer.id,
@@ -125,6 +130,8 @@ struct DisplaySettingsView: View {
                                 height: peer.remoteScreenHeight
                             )
                         }
+                        // Final deduplication pass
+                        settings.screenConfig.arrangement.deduplicateScreens()
                     }
                     .buttonStyle(.bordered)
                 }
@@ -190,15 +197,25 @@ struct DisplaySettingsView: View {
             // Initialize screens if empty
             if settings.screenConfig.arrangement.screens.isEmpty {
                 settings.screenConfig.arrangement.initializeLocalDisplays()
-                for peer in controller.connectedPeers {
-                    settings.screenConfig.arrangement.updateRemoteScreen(
-                        peerId: peer.id,
-                        name: peer.displayName,
-                        width: peer.remoteScreenWidth,
-                        height: peer.remoteScreenHeight
-                    )
-                }
             }
+            
+            // Remove stale remote screens
+            settings.screenConfig.arrangement.removeStaleRemoteScreens(
+                connectedPeerIds: controller.connectedPeers.map { $0.id }
+            )
+            
+            // Update/add connected peers
+            for peer in controller.connectedPeers {
+                settings.screenConfig.arrangement.updateRemoteScreen(
+                    peerId: peer.id,
+                    name: peer.displayName,
+                    width: peer.remoteScreenWidth,
+                    height: peer.remoteScreenHeight
+                )
+            }
+            
+            // Deduplicate any remaining duplicates
+            settings.screenConfig.arrangement.deduplicateScreens()
         }
     }
 }
