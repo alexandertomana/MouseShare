@@ -48,7 +48,14 @@ final class EventInjectionService {
     
     /// Update local screen bounds for coordinate mapping
     func updateLocalScreenBounds() {
-        localScreenBounds = DisplayInfo.combinedBounds
+        // Use CGDisplayBounds for consistency with CGWarpMouseCursorPosition
+        let mainDisplay = CGMainDisplayID()
+        localScreenBounds = CGDisplayBounds(mainDisplay)
+        
+        // Fallback if somehow bounds are invalid
+        if localScreenBounds.width <= 0 || localScreenBounds.height <= 0 {
+            localScreenBounds = CGRect(x: 0, y: 0, width: 1920, height: 1080)
+        }
     }
     
     /// Set remote screen bounds for coordinate transformation
@@ -134,25 +141,35 @@ final class EventInjectionService {
     /// Warp cursor to a specific screen edge (used when returning from remote control)
     /// - Parameters:
     ///   - edge: The edge to warp to
-    ///   - relativePosition: Position along the edge (0.0 to 1.0)
+    ///   - relativePosition: Position along the edge (0.0 to 1.0, where 0.0 is top/left in CG coords)
     func warpToEdge(_ edge: ScreenEdge, relativePosition: CGFloat) {
         let mainDisplay = CGMainDisplayID()
         let bounds = CGDisplayBounds(mainDisplay)
-        let inset: CGFloat = 20  // Stay slightly inside the edge
+        let inset: CGFloat = 50  // Stay inside the edge to avoid immediate re-trigger
+        
+        // Clamp relativePosition to valid range
+        let clampedPosition = max(0.0, min(1.0, relativePosition))
+        
+        // Also clamp to avoid corners (10% buffer on each end)
+        let safePosition = max(0.1, min(0.9, clampedPosition))
         
         var point: CGPoint
         switch edge {
         case .left:
-            point = CGPoint(x: bounds.minX + inset, y: bounds.minY + relativePosition * bounds.height)
+            // Left edge: X at left, Y based on relative position
+            point = CGPoint(x: bounds.minX + inset, y: bounds.minY + safePosition * bounds.height)
         case .right:
-            point = CGPoint(x: bounds.maxX - inset, y: bounds.minY + relativePosition * bounds.height)
+            // Right edge: X at right, Y based on relative position
+            point = CGPoint(x: bounds.maxX - inset, y: bounds.minY + safePosition * bounds.height)
         case .top:
-            point = CGPoint(x: bounds.minX + relativePosition * bounds.width, y: bounds.minY + inset)
+            // Top edge: Y at top (minY in CG coords), X based on relative position
+            point = CGPoint(x: bounds.minX + safePosition * bounds.width, y: bounds.minY + inset)
         case .bottom:
-            point = CGPoint(x: bounds.minX + relativePosition * bounds.width, y: bounds.maxY - inset)
+            // Bottom edge: Y at bottom (maxY in CG coords), X based on relative position
+            point = CGPoint(x: bounds.minX + safePosition * bounds.width, y: bounds.maxY - inset)
         }
         
-        debugLog("warpToEdge(\(edge), \(relativePosition)) -> \(point)")
+        debugLog("warpToEdge(\(edge), \(relativePosition) -> \(safePosition)) -> \(point), bounds=\(bounds)")
         CGWarpMouseCursorPosition(point)
         currentMousePosition = point
     }
@@ -377,28 +394,36 @@ final class EventInjectionService {
     }
     
     private func calculateEntryPoint(edge: ScreenEdge, relativeX: Float, relativeY: Float) -> CGPoint {
-        let bounds = localScreenBounds
+        // Use CGDisplayBounds for consistency with CGWarpMouseCursorPosition
+        let mainDisplay = CGMainDisplayID()
+        let bounds = CGDisplayBounds(mainDisplay)
+        
+        // Clamp values to valid range
+        let safeX = max(0.05, min(0.95, CGFloat(relativeX)))
+        let safeY = max(0.05, min(0.95, CGFloat(relativeY)))
+        
+        let inset: CGFloat = 50  // Stay inside edge to avoid immediate re-trigger
         
         switch edge {
         case .left:
             // Entering from the left edge
-            let y = bounds.minY + CGFloat(relativeY) * bounds.height
-            return CGPoint(x: bounds.minX + 5, y: y)
+            let y = bounds.minY + safeY * bounds.height
+            return CGPoint(x: bounds.minX + inset, y: y)
             
         case .right:
             // Entering from the right edge
-            let y = bounds.minY + CGFloat(relativeY) * bounds.height
-            return CGPoint(x: bounds.maxX - 5, y: y)
+            let y = bounds.minY + safeY * bounds.height
+            return CGPoint(x: bounds.maxX - inset, y: y)
             
         case .top:
-            // Entering from the top edge
-            let x = bounds.minX + CGFloat(relativeX) * bounds.width
-            return CGPoint(x: x, y: bounds.minY + 5)
+            // Entering from the top edge (minY in CG coords)
+            let x = bounds.minX + safeX * bounds.width
+            return CGPoint(x: x, y: bounds.minY + inset)
             
         case .bottom:
-            // Entering from the bottom edge
-            let x = bounds.minX + CGFloat(relativeX) * bounds.width
-            return CGPoint(x: x, y: bounds.maxY - 5)
+            // Entering from the bottom edge (maxY in CG coords)
+            let x = bounds.minX + safeX * bounds.width
+            return CGPoint(x: x, y: bounds.maxY - inset)
         }
     }
     

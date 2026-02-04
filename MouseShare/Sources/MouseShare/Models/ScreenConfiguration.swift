@@ -280,7 +280,18 @@ struct DisplayInfo: Identifiable {
     /// Get combined bounds of all displays
     static var combinedBounds: CGRect {
         let displays = allDisplays()
-        guard !displays.isEmpty else { return .zero }
+        
+        // Fallback to main display bounds if no displays detected
+        if displays.isEmpty {
+            let mainDisplay = CGMainDisplayID()
+            let bounds = CGDisplayBounds(mainDisplay)
+            // CGDisplayBounds should always return valid bounds for main display
+            if bounds.width > 0 && bounds.height > 0 {
+                return bounds
+            }
+            // Ultimate fallback - should never happen
+            return CGRect(x: 0, y: 0, width: 1920, height: 1080)
+        }
         
         var minX = CGFloat.infinity
         var minY = CGFloat.infinity
@@ -294,7 +305,15 @@ struct DisplayInfo: Identifiable {
             maxY = max(maxY, display.frame.maxY)
         }
         
-        return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+        let result = CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+        
+        // Sanity check - if somehow we still got zero bounds, use main display
+        if result.width <= 0 || result.height <= 0 {
+            let mainDisplay = CGMainDisplayID()
+            return CGDisplayBounds(mainDisplay)
+        }
+        
+        return result
     }
 }
 

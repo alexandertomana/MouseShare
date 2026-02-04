@@ -155,7 +155,15 @@ final class EventCaptureService {
     
     /// Update screen bounds configuration
     func updateScreenBounds() {
-        screenBounds = DisplayInfo.combinedBounds
+        // Use CGDisplayBounds for consistency (CG coordinates, top-left origin)
+        let mainDisplay = CGMainDisplayID()
+        screenBounds = CGDisplayBounds(mainDisplay)
+        
+        // Fallback if somehow bounds are invalid
+        if screenBounds.width <= 0 || screenBounds.height <= 0 {
+            screenBounds = CGRect(x: 0, y: 0, width: 1920, height: 1080)
+        }
+        
         print("EventCaptureService: Screen bounds updated to \(screenBounds)")
     }
     
