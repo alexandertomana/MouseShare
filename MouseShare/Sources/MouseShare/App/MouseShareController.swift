@@ -158,6 +158,13 @@ final class MouseShareController: ObservableObject {
             debugLog("Initialized local display arrangement")
         }
         
+        // Log current arrangement for debugging
+        debugLog("=== SCREEN ARRANGEMENT ===")
+        for screen in settings.screenConfig.arrangement.screens {
+            debugLog("  \(screen.isLocal ? "LOCAL" : "REMOTE"): \(screen.name) (\(screen.width)x\(screen.height)) at (\(screen.x), \(screen.y)) peerId=\(String(describing: screen.peerId))")
+        }
+        debugLog("==========================")
+        
         // Get screen info
         let mainDisplay = DisplayInfo.mainDisplay
         let screenWidth = mainDisplay?.width ?? 1920
@@ -539,9 +546,14 @@ final class MouseShareController: ObservableObject {
     }
     
     private func transitionToControlled(by peer: Peer) {
+        debugLog("transitionToControlled() by \(peer.name)")
         controlState = .controlled
         activePeer = peer
         peer.state = .controlled
+        
+        // IMPORTANT: Disable edge detection while being controlled
+        // This prevents injected mouse events from triggering edge transitions
+        eventCaptureService?.setControlling(false)
         
         // Show cursor and prepare for remote input
         eventInjectionService?.setCursorVisible(true)
@@ -551,11 +563,14 @@ final class MouseShareController: ObservableObject {
         )
         
         statusMessage = "Controlled by \(peer.name)"
-        print("MouseShareController: Now controlled by \(peer.name)")
+        debugLog("Now being controlled by \(peer.name)")
     }
     
     private func returnToLocalControl() {
+        debugLog("returnToLocalControl() called, previous state: \(controlState), activePeer: \(String(describing: activePeer?.name))")
         let previousPeer = activePeer
+        let wasControlling = controlState == .controlling
+        let wasControlled = controlState == .controlled
         
         // Cancel any pending failsafe timer
         cancelTransitionFailsafe()
@@ -563,16 +578,15 @@ final class MouseShareController: ObservableObject {
         controlState = .local
         activePeer = nil
         
-        // Tell capture service to process events locally
+        // Tell capture service to process events locally (re-enable edge detection)
         eventCaptureService?.setControlling(true)
         
         // Re-associate mouse and cursor FIRST (was disassociated when controlling)
         CGAssociateMouseAndMouseCursorPosition(1)
         
-        // Warp cursor to the correct edge position BEFORE showing it
-        // This ensures cursor appears at the edge we left from, not wherever it drifted
-        if let exitEdge = controllingExitEdge {
-            debugLog("Returning to local: warping to \(exitEdge) edge at position \(controllingExitPosition)")
+        // If we were CONTROLLING a remote, warp to our exit position
+        if wasControlling, let exitEdge = controllingExitEdge {
+            debugLog("Was controlling: warping to \(exitEdge) edge at position \(controllingExitPosition)")
             eventInjectionService?.warpToEdge(exitEdge, relativePosition: controllingExitPosition)
         }
         
@@ -589,21 +603,24 @@ final class MouseShareController: ObservableObject {
         // Clear tracking state
         controllingExitEdge = nil
         controllingExitPosition = 0.5
+        controlledEntryEdge = nil
+        hasMovedAwayFromEntryEdge = false
         
         // Set cooldown to prevent immediate re-transition
         transitionCooldownUntil = Date().addingTimeInterval(transitionCooldownDuration)
         
         if let peer = previousPeer {
             peer.state = .connected
-            // Notify the peer we're leaving (if still connected)
-            if let edge = pendingTransitionEdge {
+            // Notify the peer we're leaving (only if we were controlling them)
+            if wasControlling, let edge = pendingTransitionEdge {
                 let leaveEvent = InputEvent.screenLeave(edge: edge.opposite)
                 inputNetworkService?.send(leaveEvent, to: peer.id)
+                debugLog("Sent screenLeave to \(peer.name)")
             }
         }
         
         statusMessage = "Running"
-        print("MouseShareController: Returned to local control")
+        debugLog("Returned to local control (was \(wasControlling ? "controlling" : wasControlled ? "controlled" : "local"))")
     }
     
     // MARK: - Private Methods - Event Batching
@@ -699,17 +716,20 @@ extension MouseShareController: EventCaptureDelegate {
         Task { @MainActor in
             // Don't transition if already controlling or being controlled
             guard controlState == .local else { 
+                debugLog("Edge \(edge) reached but ignoring - controlState=\(controlState)")
                 return 
             }
             
             // Check cooldown to prevent rapid re-transitions
             if Date() < transitionCooldownUntil {
+                let remaining = transitionCooldownUntil.timeIntervalSinceNow
+                debugLog("Edge \(edge) reached but in cooldown (\(remaining)s remaining)")
                 return
             }
             
             // Check if we have a peer linked to this edge
             let peerId = settings.screenConfig.peerForEdge(edge)
-            debugLog("Edge \(edge) reached at \(point), peerId=\(String(describing: peerId)), connectedPeers=\(connectedPeers.map { $0.name })")
+            debugLog("Edge \(edge) reached at \(point), peerId=\(String(describing: peerId)), connectedPeers=\(connectedPeers.map { $0.name }), controlState=\(controlState)")
             
             guard let peerId = peerId,
                   let peer = connectedPeers.first(where: { $0.id == peerId }) else {
@@ -915,6 +935,7 @@ extension MouseShareController: InputNetworkDelegate {
                 
             case .screenLeave:
                 // Remote peer is leaving (returning control)
+                debugLog("Received screenLeave from \(peerId) - returning to local control")
                 returnToLocalControl()
                 
             case .clipboardUpdate:
@@ -937,10 +958,12 @@ extension MouseShareController: InputNetworkDelegate {
                     eventInjectionService?.inject(event)
                     
                     // Check for edge crossing to return control
-                    // If the cursor reaches the entry edge, return to the controller
+                    // Only check on mouse move events, not clicks or drags
                     if event.type == .mouseMove, let x = event.x, let y = event.y {
                         checkForReturnEdgeCrossing(x: x, y: y, controllerPeerId: peerId)
                     }
+                } else {
+                    debugLog("Ignoring event type \(event.type) - controlState=\(controlState), expected=.controlled")
                 }
             }
         }
@@ -948,8 +971,12 @@ extension MouseShareController: InputNetworkDelegate {
     
     /// Check if cursor position has crossed an edge to return control to the controller
     private func checkForReturnEdgeCrossing(x: Float, y: Float, controllerPeerId: UUID) {
-        // Only check for return if we know which edge we entered from
-        guard let entryEdge = controlledEntryEdge else { return }
+        // Only check for return if we know which edge we entered from AND we're being controlled
+        guard controlState == .controlled else { return }
+        guard let entryEdge = controlledEntryEdge else { 
+            debugLog("WARNING: checkForReturnEdgeCrossing called but no entryEdge set")
+            return 
+        }
         
         // Get the ACTUAL current cursor position using CGEvent (CG coordinates, top-left origin)
         // This is consistent with CGDisplayBounds
@@ -968,11 +995,11 @@ extension MouseShareController: InputNetworkDelegate {
         
         // Log first time for debugging
         if !hasMovedAwayFromEntryEdge {
-            debugLog("Return check started: cursorPos=\(point), bounds=\(bounds), entryEdge=\(entryEdge)")
+            debugLog("Return check started: cursorPos=\(point), bounds=\(bounds), entryEdge=\(entryEdge), movedAway=\(hasMovedAwayFromEntryEdge)")
         }
         
-        let edgeThreshold: CGFloat = 5.0  // Reduced - must be very close to edge
-        let awayThreshold: CGFloat = 200.0  // Increased - must move further before can return
+        let edgeThreshold: CGFloat = 3.0  // Very close to edge required
+        let awayThreshold: CGFloat = 300.0  // Must move 300px before can return
         
         // Check if cursor is at the entry edge
         // CG coordinates: origin at top-left, Y increases going DOWN
@@ -1007,11 +1034,12 @@ extension MouseShareController: InputNetworkDelegate {
         
         // Now check if cursor has returned to the entry edge
         if atEntryEdge {
-            debugLog("Cursor returned to \(entryEdge.displayName) edge - returning control. pos=\(point)")
+            debugLog("!!! RETURN TRIGGERED: Cursor returned to \(entryEdge.displayName) edge. pos=\(point), distance=\(distanceFromEntryEdge)")
             
             // Send screenLeave to tell controller we're returning
             let leaveEvent = InputEvent.screenLeave(edge: entryEdge)
             inputNetworkService?.send(leaveEvent, to: controllerPeerId)
+            debugLog("Sent screenLeave to controller")
             
             // Clear state and return to local
             controlledEntryEdge = nil
