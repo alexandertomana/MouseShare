@@ -147,6 +147,13 @@ final class MouseShareController: ObservableObject {
         // Clear any stale discovered peers
         deduplicateDiscoveredPeers()
         
+        // Initialize screen arrangement with local displays
+        if settings.screenConfig.arrangement.localScreens.isEmpty {
+            settings.screenConfig.arrangement.initializeLocalDisplays()
+            settings.save()
+            debugLog("Initialized local display arrangement")
+        }
+        
         // Get screen info
         let mainDisplay = DisplayInfo.mainDisplay
         let screenWidth = mainDisplay?.width ?? 1920
@@ -749,7 +756,16 @@ extension MouseShareController: InputNetworkDelegate {
                 connectedPeers.append(peer)
             }
             
-            print("MouseShareController: Connected to \(peer.name)")
+            // Update screen arrangement with this peer's screen info
+            settings.screenConfig.arrangement.updateRemoteScreen(
+                peerId: peer.id,
+                name: peer.displayName,
+                width: peer.remoteScreenWidth,
+                height: peer.remoteScreenHeight
+            )
+            settings.save()
+            
+            print("MouseShareController: Connected to \(peer.name) (\(peer.remoteScreenWidth)x\(peer.remoteScreenHeight))")
         }
     }
     

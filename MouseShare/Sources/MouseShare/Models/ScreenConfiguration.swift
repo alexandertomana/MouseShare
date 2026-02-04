@@ -1,7 +1,177 @@
 import Foundation
 import AppKit
 
-// MARK: - Screen Configuration
+// MARK: - Screen Arrangement
+
+/// Represents a positioned screen in the arrangement (local or remote)
+struct ArrangedScreen: Codable, Identifiable, Equatable {
+    let id: UUID  // For local screens, use display ID; for remote, use peer ID
+    var name: String
+    var width: Int
+    var height: Int
+    var x: Int  // Position in virtual coordinate space
+    var y: Int  // Position in virtual coordinate space
+    var isLocal: Bool
+    var peerId: UUID?  // Only for remote screens
+    
+    init(id: UUID = UUID(), name: String, width: Int, height: Int, x: Int = 0, y: Int = 0, isLocal: Bool = true, peerId: UUID? = nil) {
+        self.id = id
+        self.name = name
+        self.width = width
+        self.height = height
+        self.x = x
+        self.y = y
+        self.isLocal = isLocal
+        self.peerId = peerId
+    }
+    
+    var frame: CGRect {
+        CGRect(x: x, y: y, width: width, height: height)
+    }
+    
+    /// Check if this screen is adjacent to another on a given edge
+    func adjacentEdge(to other: ArrangedScreen) -> ScreenEdge? {
+        let tolerance = 50  // Allow some overlap tolerance
+        
+        // Check if vertically overlapping (for left/right adjacency)
+        let verticalOverlap = max(0, min(y + height, other.y + other.height) - max(y, other.y))
+        // Check if horizontally overlapping (for top/bottom adjacency)
+        let horizontalOverlap = max(0, min(x + width, other.x + other.width) - max(x, other.x))
+        
+        // Right edge of self touches left edge of other
+        if abs((x + width) - other.x) <= tolerance && verticalOverlap > tolerance {
+            return .right
+        }
+        // Left edge of self touches right edge of other
+        if abs(x - (other.x + other.width)) <= tolerance && verticalOverlap > tolerance {
+            return .left
+        }
+        // Bottom edge of self touches top edge of other
+        if abs((y + height) - other.y) <= tolerance && horizontalOverlap > tolerance {
+            return .bottom
+        }
+        // Top edge of self touches bottom edge of other
+        if abs(y - (other.y + other.height)) <= tolerance && horizontalOverlap > tolerance {
+            return .top
+        }
+        
+        return nil
+    }
+    
+    /// Calculate the relative Y position on the adjacent edge (0.0 to 1.0)
+    func relativePosition(at absoluteY: CGFloat, from edge: ScreenEdge) -> CGFloat {
+        switch edge {
+        case .left, .right:
+            return (absoluteY - CGFloat(y)) / CGFloat(height)
+        case .top, .bottom:
+            return 0.5  // For now, center on top/bottom transitions
+        }
+    }
+    
+    /// Calculate the entry Y position on this screen given a relative position from another screen
+    func entryPosition(relativePosition: CGFloat, on edge: ScreenEdge) -> CGFloat {
+        switch edge {
+        case .left, .right:
+            return CGFloat(y) + relativePosition * CGFloat(height)
+        case .top, .bottom:
+            return CGFloat(x) + relativePosition * CGFloat(width)
+        }
+    }
+}
+
+/// Complete screen arrangement configuration
+struct ScreenArrangement: Codable, Equatable {
+    var screens: [ArrangedScreen]
+    
+    init() {
+        self.screens = []
+    }
+    
+    /// Get the local screen(s)
+    var localScreens: [ArrangedScreen] {
+        screens.filter { $0.isLocal }
+    }
+    
+    /// Get remote peer screens
+    var remoteScreens: [ArrangedScreen] {
+        screens.filter { !$0.isLocal }
+    }
+    
+    /// Find screen by peer ID
+    func screen(forPeer peerId: UUID) -> ArrangedScreen? {
+        screens.first { $0.peerId == peerId }
+    }
+    
+    /// Find which remote screen is adjacent to a local screen on a given edge
+    func remoteScreen(adjacentTo localScreen: ArrangedScreen, on edge: ScreenEdge) -> ArrangedScreen? {
+        for screen in remoteScreens {
+            if let adjacentEdge = localScreen.adjacentEdge(to: screen), adjacentEdge == edge {
+                return screen
+            }
+        }
+        return nil
+    }
+    
+    /// Update or add a remote screen
+    mutating func updateRemoteScreen(peerId: UUID, name: String, width: Int, height: Int) {
+        if let index = screens.firstIndex(where: { $0.peerId == peerId }) {
+            screens[index].name = name
+            screens[index].width = width
+            screens[index].height = height
+        } else {
+            // Add new remote screen, position it to the right of local screens
+            let maxX = screens.map { $0.x + $0.width }.max() ?? 0
+            let newScreen = ArrangedScreen(
+                id: UUID(),
+                name: name,
+                width: width,
+                height: height,
+                x: maxX + 50,  // Small gap
+                y: 0,
+                isLocal: false,
+                peerId: peerId
+            )
+            screens.append(newScreen)
+        }
+    }
+    
+    /// Update position of a screen
+    mutating func updatePosition(id: UUID, x: Int, y: Int) {
+        if let index = screens.firstIndex(where: { $0.id == id }) {
+            screens[index].x = x
+            screens[index].y = y
+        }
+    }
+    
+    /// Remove a remote screen
+    mutating func removeRemoteScreen(peerId: UUID) {
+        screens.removeAll { $0.peerId == peerId }
+    }
+    
+    /// Initialize with local displays
+    mutating func initializeLocalDisplays() {
+        // Remove existing local screens
+        screens.removeAll { $0.isLocal }
+        
+        // Add current displays
+        let displays = DisplayInfo.allDisplays()
+        for display in displays {
+            let screen = ArrangedScreen(
+                id: UUID(),
+                name: display.name,
+                width: display.width,
+                height: display.height,
+                x: Int(display.frame.origin.x),
+                y: Int(display.frame.origin.y),
+                isLocal: true,
+                peerId: nil
+            )
+            screens.append(screen)
+        }
+    }
+}
+
+// MARK: - Screen Configuration (Legacy - kept for compatibility)
 
 /// Configuration for screen edge linking between peers
 struct ScreenEdgeLink: Codable, Identifiable, Equatable {
@@ -26,16 +196,25 @@ struct ScreenConfiguration: Codable, Equatable {
     var edgeThreshold: Int  // Pixels from edge to trigger transition
     var transitionDelay: TimeInterval  // Seconds to wait at edge before switching
     var cornerDeadZone: Int  // Pixels from corner that won't trigger transition
+    var arrangement: ScreenArrangement  // New: visual arrangement
     
     init() {
         self.edgeLinks = []
         self.edgeThreshold = 1
         self.transitionDelay = 0.0
         self.cornerDeadZone = 10
+        self.arrangement = ScreenArrangement()
     }
     
     func peerForEdge(_ edge: ScreenEdge) -> UUID? {
-        edgeLinks.first { $0.edge == edge && $0.enabled }?.peerId
+        // First check the visual arrangement
+        for localScreen in arrangement.localScreens {
+            if let remoteScreen = arrangement.remoteScreen(adjacentTo: localScreen, on: edge) {
+                return remoteScreen.peerId
+            }
+        }
+        // Fall back to legacy edge links
+        return edgeLinks.first { $0.edge == edge && $0.enabled }?.peerId
     }
     
     mutating func setLink(edge: ScreenEdge, peerId: UUID, peerEdge: ScreenEdge = .left) {
