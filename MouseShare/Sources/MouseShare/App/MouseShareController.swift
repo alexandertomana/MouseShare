@@ -670,11 +670,40 @@ extension MouseShareController: EventCaptureDelegate {
     nonisolated func eventCapture(_ service: EventCaptureService, mouseReachedEdge edge: ScreenEdge, at point: CGPoint) {
         Task { @MainActor in
             // Don't transition if already controlling or being controlled
-            guard controlState == .local else { return }
+            guard controlState == .local else { 
+                debugLog("Edge reached but not in local state: \(controlState)")
+                return 
+            }
             
             // Check if we have a peer linked to this edge
-            guard let peerId = settings.screenConfig.peerForEdge(edge),
+            let peerId = settings.screenConfig.peerForEdge(edge)
+            debugLog("Edge \(edge) reached at \(point), peerId=\(String(describing: peerId)), connectedPeers=\(connectedPeers.map { $0.name })")
+            
+            guard let peerId = peerId,
                   let peer = connectedPeers.first(where: { $0.id == peerId }) else {
+                // No peer linked - try to auto-link if there's only one connected peer
+                if connectedPeers.count == 1, let peer = connectedPeers.first {
+                    debugLog("Auto-linking \(edge) edge to only connected peer: \(peer.name)")
+                    settings.screenConfig.setLink(edge: edge, peerId: peer.id, peerEdge: edge.opposite)
+                    settings.save()
+                    // Now proceed with transition
+                    let bounds = DisplayInfo.combinedBounds
+                    guard bounds.width > 0 && bounds.height > 0 else {
+                        debugLog("ERROR: Invalid screen bounds: \(bounds)")
+                        return
+                    }
+                    var relativePosition: CGFloat
+                    switch edge {
+                    case .left, .right:
+                        relativePosition = (point.y - bounds.minY) / bounds.height
+                    case .top, .bottom:
+                        relativePosition = (point.x - bounds.minX) / bounds.width
+                    }
+                    relativePosition = max(0.0, min(1.0, relativePosition))
+                    transitionToControlling(peer: peer, edge: edge, position: relativePosition)
+                    return
+                }
+                debugLog("No peer linked to \(edge) edge")
                 return
             }
             
