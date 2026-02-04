@@ -623,14 +623,17 @@ final class InputNetworkService {
             var framedData = Data(bytes: &length, count: 4)
             framedData.append(data)
             
-            connection.send(content: framedData, completion: .contentProcessed { error in
+            debugLogNetwork("Sending handshake (\(framedData.count) bytes) to \(connection.endpoint)")
+            connection.send(content: framedData, completion: .contentProcessed { [weak self] error in
                 if let error = error {
-                    print("InputNetworkService: Handshake send error: \(error)")
+                    self?.debugLogNetwork("Handshake send error: \(error)")
+                } else {
+                    self?.debugLogNetwork("Handshake sent successfully")
                 }
             })
             
         } catch {
-            print("InputNetworkService: Handshake serialization error: \(error)")
+            debugLogNetwork("Handshake serialization error: \(error)")
         }
     }
     
@@ -810,16 +813,20 @@ final class InputNetworkService {
     }
     
     private func receiveHandshakeResponse(from connection: NWConnection, peerId: UUID) {
+        debugLogNetwork("Waiting for handshake response from \(peerId)...")
         connection.receive(minimumIncompleteLength: 4, maximumLength: 4) { [weak self] data, _, _, error in
             guard let self = self else { return }
             
+            self.debugLogNetwork("Handshake response header received: \(data?.count ?? 0) bytes, error: \(String(describing: error))")
+            
             if let error = error {
-                print("InputNetworkService: Handshake response receive error: \(error)")
+                self.debugLogNetwork("Handshake response receive error: \(error)")
                 self.cleanupConnection(for: peerId)
                 return
             }
             
             guard let data = data, data.count == 4 else {
+                self.debugLogNetwork("Invalid handshake response header")
                 self.cleanupConnection(for: peerId)
                 return
             }
@@ -842,9 +849,11 @@ final class InputNetworkService {
                 
                 do {
                     let response = try HandshakeResponse.deserialize(from: data)
+                    self.debugLogNetwork("Handshake response: accepted=\(response.accepted), peerName=\(response.peerName)")
                     
                     if response.accepted {
                         // Register connection and start receiving
+                        self.debugLogNetwork("Registering connection for \(peerId)")
                         self.registerConnection(connection, for: peerId)
                         
                         // Notify delegate
@@ -853,13 +862,14 @@ final class InputNetworkService {
                         peer.remoteScreenHeight = response.screenHeight
                         peer.state = .connected
                         
+                        self.debugLogNetwork("Notifying delegate of connection to \(response.peerName)")
                         self.delegate?.inputNetwork(self, didConnect: peer)
                     } else {
-                        print("InputNetworkService: Handshake rejected: \(response.errorMessage ?? "unknown")")
+                        self.debugLogNetwork("Handshake rejected: \(response.errorMessage ?? "unknown")")
                         self.cleanupConnection(for: peerId)
                     }
                 } catch {
-                    print("InputNetworkService: Handshake response parse error: \(error)")
+                    self.debugLogNetwork("Handshake response parse error: \(error)")
                     self.cleanupConnection(for: peerId)
                 }
             }
