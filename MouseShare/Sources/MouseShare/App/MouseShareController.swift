@@ -287,22 +287,31 @@ final class MouseShareController: ObservableObject {
     
     private func startServices() -> Bool {
         // Start event capture
-        guard eventCaptureService?.start() == true else {
-            print("MouseShareController: Failed to start event capture")
+        let eventCaptureResult = eventCaptureService?.start() ?? false
+        if !eventCaptureResult {
+            print("MouseShareController: Failed to start event capture - check Accessibility permissions")
+            statusMessage = "Failed: Accessibility permission needed"
             return false
         }
+        print("MouseShareController: Event capture started successfully")
         
         // Start network discovery
-        guard networkDiscoveryService?.start() == true else {
+        let discoveryResult = networkDiscoveryService?.start() ?? false
+        if !discoveryResult {
             print("MouseShareController: Failed to start network discovery")
+            statusMessage = "Failed: Network discovery error"
             return false
         }
+        print("MouseShareController: Network discovery started successfully")
         
         // Start input network listener
-        guard inputNetworkService?.startListening() == true else {
-            print("MouseShareController: Failed to start input listener")
+        let listenerResult = inputNetworkService?.startListening() ?? false
+        if !listenerResult {
+            print("MouseShareController: Failed to start input listener - port may be in use")
+            statusMessage = "Failed: Port 24801 may be in use"
             return false
         }
+        print("MouseShareController: Input listener started successfully")
         
         // Start clipboard monitoring if enabled
         if settings.clipboardSyncEnabled {
