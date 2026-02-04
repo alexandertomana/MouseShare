@@ -420,8 +420,8 @@ final class MouseShareController: ObservableObject {
         // The cursor should appear on the OPPOSITE edge of the remote screen
         // If we exit via LEFT edge, cursor enters remote screen on RIGHT side (x=1.0)
         // If we exit via RIGHT edge, cursor enters remote screen on LEFT side (x=0.0)
-        let entryX: Float
-        let entryY: Float
+        var entryX: Float
+        var entryY: Float
         switch edge {
         case .left, .right:
             // Exit left -> enter right (1.0), exit right -> enter left (0.0)
@@ -432,6 +432,13 @@ final class MouseShareController: ObservableObject {
             // Exit top -> enter bottom (1.0), exit bottom -> enter top (0.0)
             entryY = (edge == .top) ? 1.0 : 0.0
         }
+        
+        // Safety: ensure values are valid (not inf, nan, or out of range)
+        if !entryX.isFinite { entryX = 0.5 }
+        if !entryY.isFinite { entryY = 0.5 }
+        entryX = max(0.0, min(1.0, entryX))
+        entryY = max(0.0, min(1.0, entryY))
+        
         let enterEvent = InputEvent.screenEnter(edge: edge.opposite, x: entryX, y: entryY)
         debugLog("Sending screenEnter event to \(peer.name): edge=\(edge.opposite), x=\(entryX), y=\(entryY)")
         inputNetworkService?.send(enterEvent, to: peer.id)
@@ -489,15 +496,19 @@ final class MouseShareController: ObservableObject {
             // If we haven't heard from the peer recently, assume connection is dead
             if timeSinceLastSeen > transitionFailsafeTimeout {
                 print("MouseShareController: FAILSAFE - No response from \(peer.name), returning to local control")
+                debugLog("FAILSAFE: No response from \(peer.name) for \(timeSinceLastSeen)s, returning to local")
                 statusMessage = "Lost connection to \(peer.name)"
                 returnToLocalControl()
             } else {
-                // Connection seems alive, clear the failsafe
-                cancelTransitionFailsafe()
+                // Connection seems alive, but we still haven't received ack - wait a bit more
+                // Restart the failsafe timer
+                print("MouseShareController: FAILSAFE - Peer alive but no ack yet, extending timeout")
+                startTransitionFailsafe()
             }
         } else {
             // No pending peer info, something is wrong - return to local
             print("MouseShareController: FAILSAFE - Invalid state, returning to local control")
+            debugLog("FAILSAFE: Invalid state (no pending peer), returning to local")
             returnToLocalControl()
         }
     }
@@ -658,21 +669,32 @@ extension MouseShareController: EventCaptureDelegate {
     
     nonisolated func eventCapture(_ service: EventCaptureService, mouseReachedEdge edge: ScreenEdge, at point: CGPoint) {
         Task { @MainActor in
+            // Don't transition if already controlling or being controlled
+            guard controlState == .local else { return }
+            
             // Check if we have a peer linked to this edge
             guard let peerId = settings.screenConfig.peerForEdge(edge),
                   let peer = connectedPeers.first(where: { $0.id == peerId }) else {
                 return
             }
             
-            // Calculate relative position
+            // Calculate relative position with safety checks
             let bounds = DisplayInfo.combinedBounds
-            let relativePosition: CGFloat
+            guard bounds.width > 0 && bounds.height > 0 else {
+                debugLog("ERROR: Invalid screen bounds: \(bounds)")
+                return
+            }
+            
+            var relativePosition: CGFloat
             switch edge {
             case .left, .right:
                 relativePosition = (point.y - bounds.minY) / bounds.height
             case .top, .bottom:
                 relativePosition = (point.x - bounds.minX) / bounds.width
             }
+            
+            // Clamp to valid range
+            relativePosition = max(0.0, min(1.0, relativePosition))
             
             // Transition to controlling
             transitionToControlling(peer: peer, edge: edge, position: relativePosition)
@@ -872,6 +894,12 @@ extension MouseShareController: InputNetworkDelegate {
         // NSEvent.mouseLocation is in screen coordinates with origin at bottom-left of primary screen
         let mouseLocation = NSEvent.mouseLocation
         let bounds = DisplayInfo.combinedBounds
+        
+        // Safety check - if bounds are invalid, don't proceed
+        guard bounds.width > 0 && bounds.height > 0 else {
+            debugLog("ERROR: Invalid bounds in checkForReturnEdgeCrossing: \(bounds)")
+            return
+        }
         
         // Use the mouse location directly - it's already in the correct coordinate space
         // for comparison with DisplayInfo.combinedBounds (both use screen coordinates)
