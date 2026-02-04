@@ -115,17 +115,26 @@ final class EventInjectionService {
     // MARK: - Private Methods - Mouse Events
     
     private func injectMouseMove(_ event: InputEvent) {
-        guard let x = event.x, let y = event.y else { return }
+        guard let x = event.x, let y = event.y else { 
+            debugLog("injectMouseMove: missing x/y")
+            return 
+        }
         
         let point = transformCoordinates(x: x, y: y)
         currentMousePosition = point
+        
+        // Also warp the cursor position directly (more reliable than just posting event)
+        CGWarpMouseCursorPosition(point)
         
         guard let cgEvent = CGEvent(
             mouseEventSource: eventSource,
             mouseType: .mouseMoved,
             mouseCursorPosition: point,
             mouseButton: .left
-        ) else { return }
+        ) else { 
+            debugLog("injectMouseMove: failed to create CGEvent")
+            return 
+        }
         
         applyModifiers(to: cgEvent, from: event)
         cgEvent.post(tap: .cghidEventTap)
