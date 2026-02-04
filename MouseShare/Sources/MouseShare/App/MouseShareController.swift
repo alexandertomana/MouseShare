@@ -421,20 +421,41 @@ final class MouseShareController: ObservableObject {
         CGAssociateMouseAndMouseCursorPosition(0)
         
         // Send screen enter event to peer
-        // The cursor should appear on the OPPOSITE edge of the remote screen
-        // If we exit via LEFT edge, cursor enters remote screen on RIGHT side (x=1.0)
-        // If we exit via RIGHT edge, cursor enters remote screen on LEFT side (x=0.0)
+        // Calculate entry point using the screen arrangement for proper overlap handling
         var entryX: Float
         var entryY: Float
-        switch edge {
-        case .left, .right:
-            // Exit left -> enter right (1.0), exit right -> enter left (0.0)
-            entryX = (edge == .left) ? 1.0 : 0.0
-            entryY = Float(position)
-        case .top, .bottom:
-            entryX = Float(position)
-            // Exit top -> enter bottom (1.0), exit bottom -> enter top (0.0)
-            entryY = (edge == .top) ? 1.0 : 0.0
+        
+        // Try to use arrangement-based calculation for accurate entry point
+        if let screenPair = settings.screenConfig.arrangement.screenPair(forEdge: edge) {
+            let entryPosition = settings.screenConfig.arrangement.calculateEntryPosition(
+                exitPoint: position,
+                from: screenPair.local,
+                to: screenPair.remote,
+                edge: edge
+            )
+            
+            switch edge {
+            case .left, .right:
+                // Exit left -> enter right (1.0), exit right -> enter left (0.0)
+                entryX = (edge == .left) ? 1.0 : 0.0
+                entryY = Float(entryPosition)
+            case .top, .bottom:
+                entryX = Float(entryPosition)
+                // Exit top -> enter bottom (1.0), exit bottom -> enter top (0.0)
+                entryY = (edge == .top) ? 1.0 : 0.0
+            }
+            debugLog("Arrangement-based entry: exitPos=\(position), entryPos=\(entryPosition)")
+        } else {
+            // Fallback: simple relative position
+            switch edge {
+            case .left, .right:
+                entryX = (edge == .left) ? 1.0 : 0.0
+                entryY = Float(position)
+            case .top, .bottom:
+                entryX = Float(position)
+                entryY = (edge == .top) ? 1.0 : 0.0
+            }
+            debugLog("Fallback entry calculation (no arrangement found)")
         }
         
         // Safety: ensure values are valid (not inf, nan, or out of range)
@@ -947,11 +968,11 @@ extension MouseShareController: InputNetworkDelegate {
         
         // Log first time for debugging
         if !hasMovedAwayFromEntryEdge {
-            debugLog("Edge check: cursorPos=\(point), bounds=\(bounds), entryEdge=\(entryEdge)")
+            debugLog("Return check started: cursorPos=\(point), bounds=\(bounds), entryEdge=\(entryEdge)")
         }
         
-        let edgeThreshold: CGFloat = 10.0
-        let awayThreshold: CGFloat = 100.0  // Must move 100px away before can return
+        let edgeThreshold: CGFloat = 5.0  // Reduced - must be very close to edge
+        let awayThreshold: CGFloat = 200.0  // Increased - must move further before can return
         
         // Check if cursor is at the entry edge
         // CG coordinates: origin at top-left, Y increases going DOWN

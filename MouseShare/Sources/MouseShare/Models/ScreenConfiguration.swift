@@ -31,7 +31,7 @@ struct ArrangedScreen: Codable, Identifiable, Equatable {
     
     /// Check if this screen is adjacent to another on a given edge
     func adjacentEdge(to other: ArrangedScreen) -> ScreenEdge? {
-        let tolerance = 50  // Allow some overlap tolerance
+        let tolerance = 100  // Increased tolerance for easier adjacency detection
         
         // Check if vertically overlapping (for left/right adjacency)
         let verticalOverlap = max(0, min(y + height, other.y + other.height) - max(y, other.y))
@@ -39,19 +39,23 @@ struct ArrangedScreen: Codable, Identifiable, Equatable {
         let horizontalOverlap = max(0, min(x + width, other.x + other.width) - max(x, other.x))
         
         // Right edge of self touches left edge of other
-        if abs((x + width) - other.x) <= tolerance && verticalOverlap > tolerance {
+        let rightGap = abs((x + width) - other.x)
+        if rightGap <= tolerance && verticalOverlap > tolerance {
             return .right
         }
         // Left edge of self touches right edge of other
-        if abs(x - (other.x + other.width)) <= tolerance && verticalOverlap > tolerance {
+        let leftGap = abs(x - (other.x + other.width))
+        if leftGap <= tolerance && verticalOverlap > tolerance {
             return .left
         }
         // Bottom edge of self touches top edge of other
-        if abs((y + height) - other.y) <= tolerance && horizontalOverlap > tolerance {
+        let bottomGap = abs((y + height) - other.y)
+        if bottomGap <= tolerance && horizontalOverlap > tolerance {
             return .bottom
         }
         // Top edge of self touches bottom edge of other
-        if abs(y - (other.y + other.height)) <= tolerance && horizontalOverlap > tolerance {
+        let topGap = abs(y - (other.y + other.height))
+        if topGap <= tolerance && horizontalOverlap > tolerance {
             return .top
         }
         
@@ -107,6 +111,81 @@ struct ScreenArrangement: Codable, Equatable {
         for screen in remoteScreens {
             if let adjacentEdge = localScreen.adjacentEdge(to: screen), adjacentEdge == edge {
                 return screen
+            }
+        }
+        return nil
+    }
+    
+    /// Calculate the entry point on the target screen based on the exit point from the source screen
+    /// Takes into account the actual overlap region between screens
+    /// - Parameters:
+    ///   - exitPoint: The position (0.0-1.0) along the exit edge on the source screen
+    ///   - sourceScreen: The screen being exited
+    ///   - targetScreen: The screen being entered
+    ///   - edge: The edge being crossed (from source screen's perspective)
+    /// - Returns: The entry position (0.0-1.0) on the target screen's opposite edge
+    func calculateEntryPosition(exitPoint: CGFloat, from sourceScreen: ArrangedScreen, to targetScreen: ArrangedScreen, edge: ScreenEdge) -> CGFloat {
+        switch edge {
+        case .left, .right:
+            // Vertical overlap calculation
+            // Find the overlapping Y range between the two screens
+            let sourceTop = sourceScreen.y
+            let sourceBottom = sourceScreen.y + sourceScreen.height
+            let targetTop = targetScreen.y
+            let targetBottom = targetScreen.y + targetScreen.height
+            
+            // Calculate overlap region
+            let overlapTop = max(sourceTop, targetTop)
+            let overlapBottom = min(sourceBottom, targetBottom)
+            let overlapHeight = max(0, overlapBottom - overlapTop)
+            
+            guard overlapHeight > 0 else { return 0.5 }  // No overlap, center
+            
+            // Convert exitPoint (0-1 on source) to absolute Y
+            let absoluteY = CGFloat(sourceTop) + exitPoint * CGFloat(sourceScreen.height)
+            
+            // Check if the exit point is within the overlap region
+            if absoluteY < CGFloat(overlapTop) {
+                // Exit point is above overlap - enter at top of overlap
+                return CGFloat(overlapTop - targetTop) / CGFloat(targetScreen.height)
+            } else if absoluteY > CGFloat(overlapBottom) {
+                // Exit point is below overlap - enter at bottom of overlap
+                return CGFloat(overlapBottom - targetTop) / CGFloat(targetScreen.height)
+            } else {
+                // Exit point is within overlap - map directly
+                return (absoluteY - CGFloat(targetTop)) / CGFloat(targetScreen.height)
+            }
+            
+        case .top, .bottom:
+            // Horizontal overlap calculation
+            let sourceLeft = sourceScreen.x
+            let sourceRight = sourceScreen.x + sourceScreen.width
+            let targetLeft = targetScreen.x
+            let targetRight = targetScreen.x + targetScreen.width
+            
+            let overlapLeft = max(sourceLeft, targetLeft)
+            let overlapRight = min(sourceRight, targetRight)
+            let overlapWidth = max(0, overlapRight - overlapLeft)
+            
+            guard overlapWidth > 0 else { return 0.5 }
+            
+            let absoluteX = CGFloat(sourceLeft) + exitPoint * CGFloat(sourceScreen.width)
+            
+            if absoluteX < CGFloat(overlapLeft) {
+                return CGFloat(overlapLeft - targetLeft) / CGFloat(targetScreen.width)
+            } else if absoluteX > CGFloat(overlapRight) {
+                return CGFloat(overlapRight - targetLeft) / CGFloat(targetScreen.width)
+            } else {
+                return (absoluteX - CGFloat(targetLeft)) / CGFloat(targetScreen.width)
+            }
+        }
+    }
+    
+    /// Get local and remote screen pair for an edge transition
+    func screenPair(forEdge edge: ScreenEdge) -> (local: ArrangedScreen, remote: ArrangedScreen)? {
+        for localScreen in localScreens {
+            if let remoteScreen = remoteScreen(adjacentTo: localScreen, on: edge) {
+                return (localScreen, remoteScreen)
             }
         }
         return nil
@@ -258,11 +337,34 @@ struct ScreenConfiguration: Codable, Equatable {
         // First check the visual arrangement
         for localScreen in arrangement.localScreens {
             if let remoteScreen = arrangement.remoteScreen(adjacentTo: localScreen, on: edge) {
+                debugLogConfig("peerForEdge(\(edge)): Found via arrangement - local=\(localScreen.name), remote=\(remoteScreen.name), peerId=\(String(describing: remoteScreen.peerId))")
                 return remoteScreen.peerId
             }
         }
         // Fall back to legacy edge links
-        return edgeLinks.first { $0.edge == edge && $0.enabled }?.peerId
+        if let link = edgeLinks.first(where: { $0.edge == edge && $0.enabled }) {
+            debugLogConfig("peerForEdge(\(edge)): Found via legacy link - peerId=\(link.peerId)")
+            return link.peerId
+        }
+        debugLogConfig("peerForEdge(\(edge)): No peer found. LocalScreens=\(arrangement.localScreens.count), RemoteScreens=\(arrangement.remoteScreens.count)")
+        return nil
+    }
+    
+    private func debugLogConfig(_ message: String) {
+        let logPath = "/tmp/mouseshare_debug.log"
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let line = "[\(timestamp)] [Config] \(message)\n"
+        if let data = line.data(using: .utf8) {
+            if FileManager.default.fileExists(atPath: logPath) {
+                if let handle = FileHandle(forWritingAtPath: logPath) {
+                    handle.seekToEndOfFile()
+                    handle.write(data)
+                    handle.closeFile()
+                }
+            } else {
+                try? data.write(to: URL(fileURLWithPath: logPath))
+            }
+        }
     }
     
     mutating func setLink(edge: ScreenEdge, peerId: UUID, peerEdge: ScreenEdge = .left) {
