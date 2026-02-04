@@ -124,29 +124,53 @@ final class EventInjectionService {
     // MARK: - Private Methods - Mouse Events
     
     private func injectMouseMove(_ event: InputEvent) {
-        guard let x = event.x, let y = event.y else { 
-            debugLog("injectMouseMove: missing x/y")
-            return 
+        // Use mouse deltas for relative movement if available
+        if let deltaX = event.mouseDeltaX, let deltaY = event.mouseDeltaY,
+           (deltaX != 0 || deltaY != 0) {
+            // Apply delta to current position
+            let newX = currentMousePosition.x + CGFloat(deltaX)
+            let newY = currentMousePosition.y + CGFloat(deltaY)
+            
+            // Clamp to screen bounds
+            let bounds = localScreenBounds
+            let clampedX = max(bounds.minX, min(bounds.maxX, newX))
+            let clampedY = max(bounds.minY, min(bounds.maxY, newY))
+            
+            let point = CGPoint(x: clampedX, y: clampedY)
+            currentMousePosition = point
+            
+            // Warp cursor to new position
+            CGWarpMouseCursorPosition(point)
+            
+            // Also post mouse move event
+            if let cgEvent = CGEvent(
+                mouseEventSource: eventSource,
+                mouseType: .mouseMoved,
+                mouseCursorPosition: point,
+                mouseButton: .left
+            ) {
+                applyModifiers(to: cgEvent, from: event)
+                cgEvent.post(tap: .cghidEventTap)
+            }
+        } else if let x = event.x, let y = event.y {
+            // Fallback to absolute coordinates
+            let point = transformCoordinates(x: x, y: y)
+            currentMousePosition = point
+            
+            CGWarpMouseCursorPosition(point)
+            
+            if let cgEvent = CGEvent(
+                mouseEventSource: eventSource,
+                mouseType: .mouseMoved,
+                mouseCursorPosition: point,
+                mouseButton: .left
+            ) {
+                applyModifiers(to: cgEvent, from: event)
+                cgEvent.post(tap: .cghidEventTap)
+            }
+        } else {
+            debugLog("injectMouseMove: missing coordinates")
         }
-        
-        let point = transformCoordinates(x: x, y: y)
-        currentMousePosition = point
-        
-        // Also warp the cursor position directly (more reliable than just posting event)
-        CGWarpMouseCursorPosition(point)
-        
-        guard let cgEvent = CGEvent(
-            mouseEventSource: eventSource,
-            mouseType: .mouseMoved,
-            mouseCursorPosition: point,
-            mouseButton: .left
-        ) else { 
-            debugLog("injectMouseMove: failed to create CGEvent")
-            return 
-        }
-        
-        applyModifiers(to: cgEvent, from: event)
-        cgEvent.post(tap: .cghidEventTap)
     }
     
     private func injectMouseDown(_ event: InputEvent) {

@@ -248,7 +248,10 @@ final class EventCaptureService {
         
         switch type {
         case .mouseMoved:
-            return .mouseMove(x: x, y: y, modifiers: currentModifiers)
+            // Get mouse deltas for relative movement
+            let deltaX = Float(event.getDoubleValueField(.mouseEventDeltaX))
+            let deltaY = Float(event.getDoubleValueField(.mouseEventDeltaY))
+            return .mouseMove(x: x, y: y, deltaX: deltaX, deltaY: deltaY, modifiers: currentModifiers)
             
         case .leftMouseDown:
             let clickCount = UInt8(event.getIntegerValueField(.mouseEventClickState))

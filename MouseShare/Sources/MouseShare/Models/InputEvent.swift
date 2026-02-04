@@ -84,6 +84,10 @@ struct InputEvent: Codable {
     var scrollDeltaX: Float?
     var scrollDeltaY: Float?
     
+    // Mouse delta for relative movement (when controlling remote)
+    var mouseDeltaX: Float?
+    var mouseDeltaY: Float?
+    
     // Keyboard data
     var keyCode: UInt16?
     var characters: String?
@@ -100,14 +104,17 @@ struct InputEvent: Codable {
     
     // MARK: - Factory Methods
     
-    static func mouseMove(x: Float, y: Float, modifiers: ModifierFlags = []) -> InputEvent {
-        InputEvent(
+    static func mouseMove(x: Float, y: Float, deltaX: Float = 0, deltaY: Float = 0, modifiers: ModifierFlags = []) -> InputEvent {
+        var event = InputEvent(
             type: .mouseMove,
             timestamp: currentTimestamp(),
             x: x,
             y: y,
             modifiers: modifiers
         )
+        event.mouseDeltaX = deltaX
+        event.mouseDeltaY = deltaY
+        return event
     }
     
     static func mouseDown(x: Float, y: Float, button: MouseButton, clickCount: UInt8 = 1) -> InputEvent {
