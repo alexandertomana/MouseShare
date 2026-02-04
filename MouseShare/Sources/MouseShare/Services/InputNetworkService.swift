@@ -385,8 +385,11 @@ final class InputNetworkService {
             return
         }
         
-        // Check if already connected
-        if connectionQueue.sync(execute: { connections[peer.id] != nil }) {
+        // Check if already connected (NWConnection or BSD)
+        let alreadyConnected = connectionQueue.sync { 
+            connections[peer.id] != nil || bsdConnections[peer.id] != nil
+        }
+        if alreadyConnected {
             print("InputNetworkService: Already connected to \(peer.name)")
             return
         }
@@ -410,9 +413,23 @@ final class InputNetworkService {
         parameters.prohibitedInterfaceTypes = [.cellular, .loopback]
         // Don't require specific interface type - allow WiFi, Ethernet, etc.
         
-        // Create connection to the peer's endpoint  
-        print("InputNetworkService: Connecting to endpoint \(endpoint) for peer \(peer.name)")
-        let connection = NWConnection(to: endpoint, using: parameters)
+        // For Bonjour service endpoints, we need to connect to the actual input port (24801)
+        // not the Bonjour advertising port. Extract the hostname and create a new endpoint.
+        let actualEndpoint: NWEndpoint
+        if case .service(let name, _, let domain, _) = endpoint {
+            // Create hostname from service name and domain
+            // Service name is the peer name, we need to resolve to hostname
+            // Use the peer's hostName if available, or construct from name
+            let hostname = peer.hostName.isEmpty ? "\(name.replacingOccurrences(of: " ", with: "-")).local" : peer.hostName
+            print("InputNetworkService: Bonjour endpoint detected, connecting to \(hostname):\(NetworkDiscoveryService.defaultPort)")
+            actualEndpoint = .hostPort(host: NWEndpoint.Host(hostname), port: NWEndpoint.Port(rawValue: NetworkDiscoveryService.defaultPort)!)
+        } else {
+            actualEndpoint = endpoint
+        }
+        
+        // Create connection to the actual endpoint  
+        print("InputNetworkService: Connecting to endpoint \(actualEndpoint) for peer \(peer.name)")
+        let connection = NWConnection(to: actualEndpoint, using: parameters)
         
         // Store as pending until handshake completes
         let connectionId = ObjectIdentifier(connection)

@@ -309,7 +309,10 @@ final class NetworkDiscoveryService {
         }
         
         // Create new peer
-        let peer = Peer(id: id, name: name, hostName: "\(name).\(type)\(domain)")
+        // Convert the Bonjour service name to a proper .local hostname
+        // e.g., "Mac Studio" -> "Mac-Studio.local"
+        let hostname = name.replacingOccurrences(of: " ", with: "-") + ".local"
+        let peer = Peer(id: id, name: name, hostName: hostname)
         peer.endpoint = result.endpoint
         peer.remoteScreenWidth = screenWidth
         peer.remoteScreenHeight = screenHeight
