@@ -386,21 +386,28 @@ final class MouseShareController: ObservableObject {
         // Tell the capture service to forward events instead of local processing
         eventCaptureService?.setControlling(false)
         
-        // Hide local cursor
+        // Hide local cursor (call multiple times to ensure it's hidden)
         eventInjectionService?.setCursorVisible(false)
+        CGDisplayHideCursor(CGMainDisplayID())
+        
+        // Also associate mouse with cursor to prevent drift
+        CGAssociateMouseAndMouseCursorPosition(0)
         
         // Send screen enter event to peer
-        // For left/right edges, position is the relative Y (0-1), X is at the edge
-        // For top/bottom edges, position is the relative X (0-1), Y is at the edge
+        // The cursor should appear on the OPPOSITE edge of the remote screen
+        // If we exit via LEFT edge, cursor enters remote screen on RIGHT side (x=1.0)
+        // If we exit via RIGHT edge, cursor enters remote screen on LEFT side (x=0.0)
         let entryX: Float
         let entryY: Float
         switch edge {
         case .left, .right:
-            entryX = (edge == .left) ? 0.0 : 1.0  // Entry point on opposite side
+            // Exit left -> enter right (1.0), exit right -> enter left (0.0)
+            entryX = (edge == .left) ? 1.0 : 0.0
             entryY = Float(position)
         case .top, .bottom:
             entryX = Float(position)
-            entryY = (edge == .top) ? 0.0 : 1.0
+            // Exit top -> enter bottom (1.0), exit bottom -> enter top (0.0)
+            entryY = (edge == .top) ? 1.0 : 0.0
         }
         let enterEvent = InputEvent.screenEnter(edge: edge.opposite, x: entryX, y: entryY)
         debugLog("Sending screenEnter event to \(peer.name): edge=\(edge.opposite), x=\(entryX), y=\(entryY)")
@@ -500,7 +507,11 @@ final class MouseShareController: ObservableObject {
         // Tell capture service to process events locally
         eventCaptureService?.setControlling(true)
         
-        // Show cursor
+        // Re-associate mouse and cursor (was disassociated when controlling)
+        CGAssociateMouseAndMouseCursorPosition(1)
+        
+        // Show cursor (call multiple times to ensure visible)
+        CGDisplayShowCursor(CGMainDisplayID())
         eventInjectionService?.setCursorVisible(true)
         
         // Stop event batching
@@ -792,8 +803,49 @@ extension MouseShareController: InputNetworkDelegate {
                 // Inject the event
                 if controlState == .controlled {
                     eventInjectionService?.inject(event)
+                    
+                    // Check for edge crossing to return control
+                    // If the cursor reaches the entry edge, return to the controller
+                    if event.type == .mouseMove, let x = event.x, let y = event.y {
+                        checkForReturnEdgeCrossing(x: x, y: y, controllerPeerId: peerId)
+                    }
                 }
             }
+        }
+    }
+    
+    /// Check if cursor position has crossed an edge to return control to the controller
+    private func checkForReturnEdgeCrossing(x: Float, y: Float, controllerPeerId: UUID) {
+        let bounds = DisplayInfo.combinedBounds
+        let point = CGPoint(x: CGFloat(x), y: CGFloat(y))
+        let threshold: CGFloat = 2.0
+        
+        // Check each edge for crossing
+        var crossedEdge: ScreenEdge? = nil
+        
+        if point.x <= bounds.minX + threshold {
+            crossedEdge = .left
+        } else if point.x >= bounds.maxX - threshold {
+            crossedEdge = .right
+        } else if point.y <= bounds.minY + threshold {
+            crossedEdge = .top
+        } else if point.y >= bounds.maxY - threshold {
+            crossedEdge = .bottom
+        }
+        
+        // If cursor crossed an edge, check if there's a linked peer (the controller)
+        if let edge = crossedEdge {
+            // When controlled, we should return to the controller
+            // The "return" edge is opposite to the entry edge
+            // For simplicity, just return control on any edge crossing while controlled
+            debugLog("Cursor crossed \(edge.displayName) edge while controlled - returning control")
+            
+            // Send screenLeave to tell controller we're returning
+            let leaveEvent = InputEvent.screenLeave(edge: edge)
+            inputNetworkService?.send(leaveEvent, to: controllerPeerId)
+            
+            // Return to local
+            returnToLocalControl()
         }
     }
     
