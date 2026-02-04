@@ -875,20 +875,22 @@ final class InputNetworkService {
                 
                 do {
                     let response = try HandshakeResponse.deserialize(from: data)
-                    self.debugLogNetwork("Handshake response: accepted=\(response.accepted), peerName=\(response.peerName)")
+                    self.debugLogNetwork("Handshake response: accepted=\(response.accepted), peerName=\(response.peerName), responsePeerId=\(response.peerId), ourPeerId=\(peerId)")
                     
                     if response.accepted {
-                        // Register connection and start receiving
-                        self.debugLogNetwork("Registering connection for \(peerId)")
+                        // Register connection using the DISCOVERED peer ID (the one we connected with)
+                        // This ensures send() can find the connection using the same ID
+                        self.debugLogNetwork("Registering connection for discovered peerId: \(peerId)")
                         self.registerConnection(connection, for: peerId)
                         
-                        // Notify delegate
-                        let peer = Peer(id: response.peerId, name: response.peerName, hostName: "")
+                        // Notify delegate with the DISCOVERED peer ID (consistent with what controller knows)
+                        // But update screen dimensions from the response
+                        let peer = Peer(id: peerId, name: response.peerName, hostName: "")
                         peer.remoteScreenWidth = response.screenWidth
                         peer.remoteScreenHeight = response.screenHeight
                         peer.state = .connected
                         
-                        self.debugLogNetwork("Notifying delegate of connection to \(response.peerName)")
+                        self.debugLogNetwork("Notifying delegate of connection to \(response.peerName) with peerId \(peerId)")
                         self.delegate?.inputNetwork(self, didConnect: peer)
                     } else {
                         self.debugLogNetwork("Handshake rejected: \(response.errorMessage ?? "unknown")")
