@@ -127,14 +127,24 @@ final class EventInjectionService {
         // Use mouse deltas for relative movement if available
         if let deltaX = event.mouseDeltaX, let deltaY = event.mouseDeltaY,
            (deltaX != 0 || deltaY != 0) {
-            // Apply delta to current position
-            let newX = currentMousePosition.x + CGFloat(deltaX)
-            let newY = currentMousePosition.y + CGFloat(deltaY)
+            // Get the ACTUAL current cursor position to avoid drift
+            // CGEvent location is in CG coordinates (top-left origin)
+            let actualPosition: CGPoint
+            if let locEvent = CGEvent(source: nil) {
+                actualPosition = locEvent.location
+            } else {
+                actualPosition = currentMousePosition
+            }
             
-            // Clamp to screen bounds
-            let bounds = localScreenBounds
-            let clampedX = max(bounds.minX, min(bounds.maxX, newX))
-            let clampedY = max(bounds.minY, min(bounds.maxY, newY))
+            // Apply delta to actual position
+            let newX = actualPosition.x + CGFloat(deltaX)
+            let newY = actualPosition.y + CGFloat(deltaY)
+            
+            // Clamp to screen bounds (use main display bounds for CG coordinates)
+            let mainDisplay = CGMainDisplayID()
+            let bounds = CGDisplayBounds(mainDisplay)
+            let clampedX = max(bounds.minX, min(bounds.maxX - 1, newX))
+            let clampedY = max(bounds.minY, min(bounds.maxY - 1, newY))
             
             let point = CGPoint(x: clampedX, y: clampedY)
             currentMousePosition = point
@@ -142,7 +152,7 @@ final class EventInjectionService {
             // Warp cursor to new position
             CGWarpMouseCursorPosition(point)
             
-            // Also post mouse move event
+            // Also post mouse move event for apps that need it
             if let cgEvent = CGEvent(
                 mouseEventSource: eventSource,
                 mouseType: .mouseMoved,
