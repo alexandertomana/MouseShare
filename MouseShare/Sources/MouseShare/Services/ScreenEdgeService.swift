@@ -157,25 +157,39 @@ final class ScreenEdgeService {
     
     /// Calculate entry point when control returns
     func calculateEntryPoint(edge: ScreenEdge, relativePosition: CGFloat) -> CGPoint {
-        let inset: CGFloat = 5  // Pixels from edge
+        let inset: CGFloat = 50  // Pixels from edge - increased to be clearly inside screen
         
+        // Use main screen frame for more reliable coordinates
+        // CGDisplayBounds uses top-left origin, which matches CGWarpMouseCursorPosition
+        let mainDisplay = CGMainDisplayID()
+        let displayBounds = CGDisplayBounds(mainDisplay)
+        
+        print("ScreenEdgeService.calculateEntryPoint: edge=\(edge), relPos=\(relativePosition)")
+        print("  displayBounds=\(displayBounds), screenBounds=\(screenBounds)")
+        
+        let result: CGPoint
         switch edge {
         case .left:
-            let y = screenBounds.minY + relativePosition * screenBounds.height
-            return CGPoint(x: screenBounds.minX + inset, y: y)
+            let y = displayBounds.minY + relativePosition * displayBounds.height
+            result = CGPoint(x: displayBounds.minX + inset, y: y)
             
         case .right:
-            let y = screenBounds.minY + relativePosition * screenBounds.height
-            return CGPoint(x: screenBounds.maxX - inset, y: y)
+            let y = displayBounds.minY + relativePosition * displayBounds.height
+            result = CGPoint(x: displayBounds.maxX - inset, y: y)
             
         case .top:
-            let x = screenBounds.minX + relativePosition * screenBounds.width
-            return CGPoint(x: x, y: screenBounds.minY + inset)
+            // Top of screen in CGDisplay coords = minY (top-left origin)
+            let x = displayBounds.minX + relativePosition * displayBounds.width
+            result = CGPoint(x: x, y: displayBounds.minY + inset)
             
         case .bottom:
-            let x = screenBounds.minX + relativePosition * screenBounds.width
-            return CGPoint(x: x, y: screenBounds.maxY - inset)
+            // Bottom of screen in CGDisplay coords = maxY
+            let x = displayBounds.minX + relativePosition * displayBounds.width
+            result = CGPoint(x: x, y: displayBounds.maxY - inset)
         }
+        
+        print("  result=\(result)")
+        return result
     }
     
     // MARK: - Private Methods

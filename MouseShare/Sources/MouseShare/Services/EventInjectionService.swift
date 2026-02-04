@@ -89,8 +89,17 @@ final class EventInjectionService {
     func moveMouse(to point: CGPoint) {
         debugLog("moveMouse() called - moving cursor to \(point)")
         currentMousePosition = point
-        CGWarpMouseCursorPosition(point)
-        debugLog("CGWarpMouseCursorPosition called")
+        
+        // Ensure mouse is associated with cursor position (might have been disassociated)
+        CGAssociateMouseAndMouseCursorPosition(1)
+        
+        // Warp the cursor
+        let result = CGWarpMouseCursorPosition(point)
+        debugLog("CGWarpMouseCursorPosition result: \(result), point: \(point)")
+        
+        // Verify the position after warp
+        let actualPos = NSEvent.mouseLocation
+        debugLog("Actual position after warp: \(actualPos)")
         
         // Optionally also post a mouse move event
         if let moveEvent = CGEvent(mouseEventSource: eventSource, mouseType: .mouseMoved,
